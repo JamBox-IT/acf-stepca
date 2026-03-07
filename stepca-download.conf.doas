@@ -1,0 +1,6 @@
+# Allow web server (nobody) to read certificate files directly as step-ca user
+permit nopass nobody as step-ca cmd /bin/cat
+
+# Allow web server (nobody) to add provisioners via restricted helper script only
+# This script internally handles environment and CA password authorization
+permit nopass nobody as step-ca cmd @@LIBEXECDIR@@/stepca-provisioner-add.sh args

@@ -1,0 +1,14 @@
+acf-stepca © Corey De Lasaux 2024 <cordelster@gmail.com>
+
+
+## Dependancies
+- step-certificates 
+- step-badger (https://github.com/lukasz-lobocki/step-badger) -installed in either /usr/bin, /usr/local/bin
+  step-badger is used where step-ca cli falls short to view catalog and cert status more specificly around 
+  revoked certs. It's optional, and just provides better information, and speeds up some of the queries..
+- jq
+
+## Description
+
+Initialize and manage Step certificates from Alpine Linux ACF. 
+

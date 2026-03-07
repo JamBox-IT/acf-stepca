@@ -1,0 +1,11 @@
+prefix=/usr
+datadir=${prefix}/share
+sysconfdir=${prefix}/etc
+localstatedir=${prefix}/var
+acfdir=${datadir}/acf
+wwwdir=${acfdir}/www
+cgibindir=${acfdir}/cgi-bin
+appdir=${acfdir}/app
+acflibdir=${acfdir}/lib
+libexecdir=${prefix}/libexec/acf-stepca
+sessionsdir=${localstatedir}/lib/acf/sessions

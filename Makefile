@@ -1,0 +1,64 @@
+include config.mk
+
+APP_NAME=stepca
+PACKAGE=acf-$(APP_NAME)
+VERSION=0.1.3
+
+APP_DIST=\
+	$(APP_NAME)*.lua \
+	$(APP_NAME)*.lsp \
+	$(APP_NAME).roles \
+	$(APP_NAME).menu
+
+# Support scripts and helpers
+SUPPORT_SCRIPTS=
+
+# doas configuration (source file has .doas suffix)
+DOAS_CONF_SRC=stepca-download.conf.doas
+DOAS_CONF_DEST=stepca-download.conf
+
+EXTRA_DIST=README Makefile config.mk
+
+DISTFILES=$(APP_DIST) $(SUPPORT_SCRIPTS) $(CGI_SCRIPT) $(DOAS_CONF_SRC) $(EXTRA_DIST)
+
+TAR=tar
+
+P=$(PACKAGE)-$(VERSION)
+tarball=$(P).tar.bz2
+install_dir=$(DESTDIR)/$(appdir)/$(APP_NAME)
+
+all:
+clean:
+	rm -rf $(tarball) $(P)
+
+dist: $(tarball)
+
+install:
+	mkdir -p "$(install_dir)"
+	# Use sed to inject libexecdir path into Lua files
+	for f in $(APP_NAME)*.lua; do \
+		sed 's|@@LIBEXECDIR@@|$(libexecdir)|g' "$$f" > "$(install_dir)/$$f"; \
+	done
+	# Copy LSP and other files
+	cp $(APP_NAME)*.lsp $(APP_NAME).roles $(APP_NAME).menu "$(install_dir)/"
+
+	# doas configuration
+	# Install doas configuration (strip .doas suffix and inject libexecdir)
+	mkdir -p "$(DESTDIR)/etc/doas.d"
+	sed 's|@@LIBEXECDIR@@|$(libexecdir)|g' $(DOAS_CONF_SRC) > "$(DESTDIR)/etc/doas.d/$(DOAS_CONF_DEST)"
+	chmod 0600 "$(DESTDIR)/etc/doas.d/$(DOAS_CONF_DEST)"
+
+$(tarball):	$(DISTFILES)
+	rm -rf $(P)
+	mkdir -p $(P)
+	cp -a $(DISTFILES) $(P)
+	$(TAR) -jcf $@ $(P)
+	rm -rf $(P)
+
+
+dist-install: $(tarball)
+	$(TAR) -jxf $(tarball)
+	$(MAKE) -C $(P) install DESTDIR=$(DESTDIR)
+	rm -rf $(P)
+
+.PHONY: all clean dist install dist-install
