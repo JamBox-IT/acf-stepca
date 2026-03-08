@@ -93,7 +93,7 @@ local function validate_hostname(hostname, field_name)
 
     -- Check for invalid characters (only alphanumeric, dash, dot, and underscore allowed)
     if hostname:match("[^a-zA-Z0-9%.%-%_]") then
-        return field_name .. " contains invalid characters. Only letters, numbers, dots, dashes, and underscores are allowed."
+        return field_name .. " has invalid chars. Only letters, numbers, dots, dashes, and underscores allowed."
     end
 
     -- Check for double dots
@@ -196,53 +196,62 @@ local function exec_as_stepca(cmd)
     return exec_command(wrapped_cmd)
 end
 
+-- Assemble a step CLI argument string guaranteeing ALL flags precede ALL positionals.
+-- This version of step uses POSIX-strict flag parsing: once a non-flag token is seen,
+-- every subsequent token is treated as a positional argument.
+-- flags: array of pre-formatted flag strings (e.g. "--provisioner='admin'")
+-- positionals: array of bare values (will be single-quoted automatically)
+local function build_step_args(flags, positionals)
+    local parts = {}
+    for _, f in ipairs(flags or {}) do
+        if f and f ~= "" then table.insert(parts, f) end
+    end
+    for _, p in ipairs(positionals or {}) do
+        table.insert(parts, string.format("'%s'", p))
+    end
+    return table.concat(parts, " ")
+end
+
 -- Wrapper for executing step commands.
 -- track: "ca" (for 'step ca ...') or "base" (for 'step certificate ...')
 -- subaction: the command (e.g., 'certificate', 'provisioner', 'create', 'sign')
--- args: pre-formatted string of flags and positional arguments
+-- flags: table of pre-formatted flag strings
+-- positionals: table of bare positional values (single-quoted by build_step_args)
 -- options: { use_pass = bool, pass_flag = string, force = bool, use_api = bool }
-local function stepca_exec(track, subaction, args, options)
+local function stepca_exec(track, subaction, flags, positionals, options)
     options = options or {}
     local cmd_base = (track == "ca") and "step ca" or "step certificate"
-
-    -- Build simple command
     local cmd = cmd_base
     if subaction and subaction ~= "" then
         cmd = cmd .. " " .. subaction
     end
 
-    -- Add CA config if requested (required for non-interactive config updates)
+    -- Infrastructure flags always prepended (before caller flags, before positionals)
+    local infra = {}
     if track == "ca" then
-        cmd = cmd .. string.format(" --ca-config='%s'", step_config)
+        table.insert(infra, string.format("--ca-config='%s'", step_config))
     end
-
-    -- Use --admin-password-file for 'step ca' administrative actions
-    -- This is the "secret weapon" for non-interactive provisioner management
-    if track == "ca" and options.use_pass then
-        cmd = cmd .. string.format(" --admin-password-file='%s'", step_password_file)
-    elseif options.use_pass then
-        -- Standard commands use the normal flag
+    -- NOTE: do NOT use --admin-password-file here; only valid for step ca admin/provisioner
+    if options.use_pass then
         local pass_flag = options.pass_flag or "--password-file"
-        cmd = cmd .. string.format(" %s='%s'", pass_flag, step_password_file)
+        table.insert(infra, string.format("%s='%s'", pass_flag, step_password_file))
     end
-
-    -- Use API flags only if explicitly requested (usually for 'step ca' track)
     if options.use_api then
         local ca_url = get_ca_address()
         local root_ca = step_certs_path .. "/root_ca.crt"
-        cmd = cmd .. string.format(" --ca-url='%s' --root='%s'", ca_url, root_ca)
+        table.insert(infra, string.format("--ca-url='%s'", ca_url))
+        table.insert(infra, string.format("--root='%s'", root_ca))
     end
-
     if options.force then
-        cmd = cmd .. " --force"
+        table.insert(infra, "--force")
     end
 
-    -- Add user arguments LAST (allows positional arguments at the end of the line)
-    if args and args ~= "" then
-        cmd = cmd .. " " .. args
-    end
+    -- Merge infra + caller flags, then positionals last via build_step_args
+    local all_flags = {}
+    for _, f in ipairs(infra)          do table.insert(all_flags, f) end
+    for _, f in ipairs(flags or {})    do table.insert(all_flags, f) end
 
-    cmd = cmd .. " 2>&1"
+    cmd = cmd .. " " .. build_step_args(all_flags, positionals) .. " 2>&1"
     return exec_as_stepca(cmd)
 end
 
@@ -277,11 +286,13 @@ local function get_cert_metadata(cert_path)
     
     if has_jq() then
         local jq_cmd = "echo '%s' | jq -r '%s'"
-        meta.subject = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".subject.common_name[0] // .subject[0] // .subject_dn")):gsub("%s+", "")
+        local sub_filter = ".subject.common_name[0] // .subject[0] // .subject_dn"
+        meta.subject = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), sub_filter)):gsub("%s+", "")
         
         -- Only use JSON serial if text extraction failed (will be decimal)
         if not meta.serial then
-            local raw_serial = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".serial_number")):gsub("%s+", ""):upper()
+            local ser_filter = ".serial_number"
+            local raw_serial = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ser_filter)):gsub("%s+", ""):upper()
             meta.serial = raw_serial:gsub("^0+", "")
             if meta.serial == "" then meta.serial = "0" end
         end
@@ -290,12 +301,14 @@ local function get_cert_metadata(cert_path)
         meta.not_before = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".validity.start")):gsub("%s+", "")
         
         -- Detect EKU accurately (extract keys as strings)
-        local ekus = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".extensions.extended_key_usage | keys[] // empty"))
+        local eku_filter = ".extensions.extended_key_usage | keys[] // empty"
+        local ekus = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), eku_filter))
         meta.has_server_auth = ekus:match("server_auth") or ekus:match("1.3.6.1.5.5.7.3.1")
         meta.has_client_auth = ekus:match("client_auth") or ekus:match("1.3.6.1.5.5.7.3.2")
         
         -- Detect CA status
-        meta.is_ca = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".extensions.basic_constraints.is_ca // false")):match("true")
+        local ca_filter = ".extensions.basic_constraints.is_ca // false"
+        meta.is_ca = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ca_filter)):match("true")
     else
         -- Fallback to text parsing if JQ is missing
         local inspect_text = text_output -- Use the text output we already got
@@ -326,7 +339,8 @@ local function validate_duration(input, field_name)
     if not input or input == "" then return nil end -- Allow empty (skipped)
     
     if not input:match("^%d+[hdms]$") then
-        return string.format("Invalid format for %s: '%s'. Use a number followed by s, m, h, or d (e.g., 24h, 365d).", field_name, input)
+        local msg = "Invalid format for %s: '%s'. Use a number followed by s, m, h, or d (e.g., 24h, 365d)."
+        return string.format(msg, field_name, input)
     end
     return nil
 end
@@ -770,9 +784,11 @@ local function load_bulk_certificate_data()
 end
 
 -- List all certificates
-function mymodule.list_certificates()
+function mymodule.list_certificates(clientdata)
+    clientdata = clientdata or {}
+    local filter = clientdata.filter or "all"
     local certs = {}
-    
+
     -- Load bulk data from DB first (fast)
     local db_certs, db_exec_time = load_bulk_certificate_data()
 
@@ -828,11 +844,17 @@ function mymodule.list_certificates()
                     subject = create_cfe("subject", subject, "Common Name", "Certificate CN", "text"),
                     serial = create_cfe("serial", serial, "Serial Number", "Certificate serial number", "text"),
                     cert_type = create_cfe("cert_type", cert_type, "Type", "Certificate type", "text"),
-                    is_system_cert = create_cfe("is_system_cert", tostring(is_system_cert), "System Certificate", "Whether this is a system certificate", "text"),
-                    is_revoked = create_cfe("is_revoked", tostring(status == "Revoked"), "Is Revoked", "Whether this certificate is revoked", "boolean"),
-                    path = create_cfe("path", cert_file, "File Path", "Path to certificate file", "text"),
-                    days_remaining = create_cfe("days_remaining", tostring(days_remaining or "N/A"), "Days Until Expiration", "Days remaining", "text"),
-                    expiration_date = create_cfe("expiration_date", not_after, "Expiration Date", "Certificate expiration", "text"),
+                    is_system_cert = create_cfe(
+                        "is_system_cert", tostring(is_system_cert), "System Cert", "Managed", "text"
+                    ),
+                    is_revoked = create_cfe(
+                        "is_revoked", tostring(status == "Revoked"), "Revoked", "Is revoked", "boolean"
+                    ),
+                    path = create_cfe("path", cert_file, "File Path", "Path to file", "text"),
+                    days_remaining = create_cfe(
+                        "days_remaining", tostring(days_remaining or "N/A"), "Days Left", "Days left", "text"
+                    ),
+                    expiration_date = create_cfe("expiration_date", not_after, "Expiration", "Expiration date", "text"),
                     status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
                     color = create_cfe("color", color, "Status Color", "Status indicator color", "text")
                 })
@@ -840,50 +862,34 @@ function mymodule.list_certificates()
         end
     end
 
-    return {
-        certificates = certs,
-        count = create_cfe("count", tostring(#certs), "Total Certificates", "Number of certificates", "text"),
-        db_exec_time = create_cfe("db_exec_time", db_exec_time and string.format("%.4f", db_exec_time) or "", "DB Load Time", "Execution time of bulk loader", "text")
-    }
-end
-
--- List infrastructure certificates only (CA, Server, Client, Client-Server)
-function mymodule.list_certificates_infrastructure()
-    local all_certs = mymodule.list_certificates()
-    local infrastructure_certs = {}
-
-    for _, cert in ipairs(all_certs.certificates) do
+    -- Apply filter
+    local visible = {}
+    for _, cert in ipairs(certs) do
         local cert_type = cert.cert_type.value
-        if is_infrastructure_cert(cert_type) then
-            table.insert(infrastructure_certs, cert)
+        if filter == "infrastructure" then
+            if is_infrastructure_cert(cert_type) then
+                table.insert(visible, cert)
+            end
+        elseif filter == "ephemeral" then
+            if not is_infrastructure_cert(cert_type) then
+                table.insert(visible, cert)
+            end
+        else
+            table.insert(visible, cert)
         end
     end
 
     return {
-        certificates = infrastructure_certs,
-        count = create_cfe("count", tostring(#infrastructure_certs), "Infrastructure Certificates", "Number of infrastructure certificates", "text"),
-        filter = create_cfe("filter", "infrastructure", "Filter", "Certificate filter type", "text"),
-        db_exec_time = all_certs.db_exec_time
-    }
-end
-
--- List ephemeral certificates only (WiFi, short-lived, etc.)
-function mymodule.list_certificates_ephemeral()
-    local all_certs = mymodule.list_certificates()
-    local ephemeral_certs = {}
-
-    for _, cert in ipairs(all_certs.certificates) do
-        local cert_type = cert.cert_type.value
-        if not is_infrastructure_cert(cert_type) then
-            table.insert(ephemeral_certs, cert)
-        end
-    end
-
-    return {
-        certificates = ephemeral_certs,
-        count = create_cfe("count", tostring(#ephemeral_certs), "Ephemeral Certificates", "Number of ephemeral certificates", "text"),
-        filter = create_cfe("filter", "ephemeral", "Filter", "Certificate filter type", "text"),
-        db_exec_time = all_certs.db_exec_time
+        certificates = visible,
+        count = create_cfe("count", tostring(#visible), "Certificates", "Number of certificates", "text"),
+        filter = create_cfe(
+            "filter", filter, "Filter", "Certificate filter", "select",
+            {"all", "infrastructure", "ephemeral"}
+        ),
+        db_exec_time = create_cfe(
+            "db_exec_time", db_exec_time and string.format("%.4f", db_exec_time) or "",
+            "DB Load Time", "Execution time of bulk loader", "text"
+        )
     }
 end
 
@@ -970,7 +976,7 @@ function mymodule.export_certificate(clientdata)
     
     elseif type == "key" then
         if is_system_cert then
-            return { error = create_cfe("error", "Private keys for system certificates are protected", "Error", "", "text") }
+            return { error = create_cfe("error", "System private keys are protected", "Error", "", "text") }
         end
         if not file_exists(key_path) then 
             return { error = create_cfe("error", "Private key not found", "Error", "", "text") } 
@@ -980,7 +986,7 @@ function mymodule.export_certificate(clientdata)
     
     elseif type == "bundle" then
         if is_system_cert then
-            return { error = create_cfe("error", "Private keys for system certificates are protected", "Error", "", "text") }
+            return { error = create_cfe("error", "System private keys are protected", "Error", "", "text") }
         end
         if not file_exists(cert_path) or not file_exists(key_path) then 
             return { error = create_cfe("error", "Certificate or key not found", "Error", "", "text") } 
@@ -1017,7 +1023,7 @@ function mymodule.get_create_form(clientdata)
         "Certificate Profile",
         "Standard step-ca profile to use",
         "select",
-        {"leaf", "intermediate-ca", "root-ca", "ssh-user", "ssh-host"}
+        {"leaf", "intermediate-ca", "root-ca", "self-signed"}
     )
 
     -- Dynamic list of templates
@@ -1121,73 +1127,80 @@ function mymodule.create_certificate(clientdata)
     local key_path = step_certs_path .. "/" .. cn .. ".key"
 
     -- Determine Track:
-    -- If it's a CA cert, we use 'step certificate create' (base track)
-    -- If it's a leaf, we use 'step ca certificate' (ca track)
+    -- base track: step certificate create (direct signing, supports --template)
+    -- ca track:   step ca certificate (CA API, no --template flag)
+    -- If a template is selected for a CA-track cert, switch to base track and sign
+    -- directly with the intermediate CA — step ca certificate has no --template flag.
     local track = "ca"
     local actual_profile = cert_profile
     if cert_profile == "root-ca" or cert_profile == "intermediate-ca" then
         track = "base"
-    elseif cert_profile == "server" or cert_profile == "client" or cert_profile == "client-server" then
-        actual_profile = "leaf"
+    elseif cert_template ~= "None" then
+        track = "base"
     end
 
-    -- Build arguments
-    -- Positional arguments FIRST for your version of step
-    local args = string.format("'%s' '%s' '%s' ", cn, cert_path, key_path)
-
+    -- Build flags table. Positionals ({cn, cert_path, key_path}) are passed
+    -- separately to stepca_exec so build_step_args can guarantee flags-before-positionals.
+    local flags = {}
     local exec_options = { use_pass = true, pass_flag = "--password-file", force = true }
 
     if track == "base" then
         -- LOW-LEVEL track: step certificate create
         if cert_template ~= "None" then
-            args = args .. string.format("--template='%s/templates/%s' ", step_ca_base, cert_template)
+            table.insert(flags, string.format("--template='%s/templates/%s'", step_ca_base, cert_template))
         else
-            args = args .. string.format("--profile='%s' ", actual_profile)
+            table.insert(flags, string.format("--profile='%s'", actual_profile))
         end
-        
-        -- If creating intermediate, we need to point to root
+
+        -- Point to the signing CA (root signs intermediate; intermediate signs leaf)
         if cert_profile == "intermediate-ca" then
-            args = args .. string.format("--ca='%s/certs/root_ca.crt' --ca-key='%s/secrets/root_ca_key' ", step_ca_base, step_ca_base)
-            args = args .. string.format("--ca-password-file='%s' ", step_password_file)
+            table.insert(flags, string.format("--ca='%s/certs/root_ca.crt'", step_ca_base))
+            table.insert(flags, string.format("--ca-key='%s/secrets/root_ca_key'", step_ca_base))
+            table.insert(flags, string.format("--ca-password-file='%s'", step_password_file))
+        elseif cert_profile ~= "root-ca" then
+            -- Leaf cert signed directly by intermediate CA
+            table.insert(flags, string.format("--ca='%s/certs/intermediate_ca.crt'", step_ca_base))
+            table.insert(flags, string.format("--ca-key='%s/secrets/intermediate_ca_key'", step_ca_base))
+            table.insert(flags, string.format("--ca-password-file='%s'", step_password_file))
         end
-        
-        args = args .. string.format("--not-after='%s' --no-password --insecure ", validity_duration)
+
+        table.insert(flags, string.format("--not-after='%s'", validity_duration))
+        table.insert(flags, "--no-password")
+        table.insert(flags, "--insecure")
     else
         -- CA track: step ca certificate
         if not is_running then
-            args = args .. "--offline "
-        end
-        
-        -- Use discovered syntax for 0.29.0
-        if cert_template ~= "None" then
-            args = args .. string.format("--set=template='%s/templates/%s' ", step_ca_base, cert_template)
-        else
-            args = args .. string.format("--set=profile='%s' ", actual_profile)
-        end
-        
-        args = args .. string.format("--not-after='%s' --provisioner='%s' ", validity_duration, provisioner)
-        
-        if not is_running then
-            -- Offline mode uses --password-file, online uses --provisioner-password-file
+            table.insert(flags, "--offline")
             exec_options.pass_flag = "--password-file"
         else
             exec_options.pass_flag = "--provisioner-password-file"
         end
+
+        table.insert(flags, string.format("--set=profile='%s'", actual_profile))
+        table.insert(flags, string.format("--not-after='%s'", validity_duration))
+        table.insert(flags, string.format("--provisioner='%s'", provisioner))
     end
 
-    -- Add SANs
+    -- SANs are flags too — must stay in the flags table (before positionals)
     local san = clientdata.san_list or ""
-    if san and san ~= "" then
+    if san ~= "" then
         for s in san:gmatch("[^,]+") do
             local trimmed = s:match("^%s*(.-)%s*$")
-            args = args .. " --san='" .. trimmed .. "'"
+            table.insert(flags, string.format("--san='%s'", trimmed))
         end
     end
 
-    local output = stepca_exec(track, (track == "base" and "create" or "certificate"), args, exec_options)
+    local subaction = (track == "base") and "create" or "certificate"
+    local output = stepca_exec(track, subaction, flags, {cn, cert_path, key_path}, exec_options)
 
     if file_exists(cert_path) then
-        result.success = create_cfe("success", "Certificate created successfully" .. (track == "base" and " (Direct Signing)" or (not is_running and " (Offline Mode)" or "")), "Success", "", "text")
+        local msg = "Certificate created successfully"
+        if track == "base" then
+            msg = msg .. " (Direct Signing)"
+        elseif not is_running then
+            msg = msg .. " (Offline Mode)"
+        end
+        result.success = create_cfe("success", msg, "Success", "", "text")
         result.cert_path = create_cfe("cert_path", cert_path, "Certificate Path", "", "text")
         result.key_path = create_cfe("key_path", key_path, "Private Key Path", "", "text")
     else
@@ -1219,7 +1232,10 @@ function mymodule.get_revoke_form(clientdata)
         "Revocation Reason",
         "Reason for revocation",
         "select",
-        {"unspecified", "key-compromise", "ca-compromise", "affiliation-changed", "superseded", "cessation-of-operation"}
+        {
+            "unspecified", "key-compromise", "ca-compromise", "affiliation-changed",
+            "superseded", "cessation-of-operation"
+        }
     )
 
     form.confirm = create_cfe(
@@ -1289,9 +1305,8 @@ function mymodule.revoke_certificate(clientdata)
     local output = ""
     if is_running then
         -- ONLINE: Must generate a token first for non-interactive revocation
-        -- POSITIONAL (serial) FIRST
-        local token_cmd = string.format("STEPPATH='%s' step ca token %s --revoke --provisioner=admin --password-file='%s' 2>&1", 
-            step_ca_base, serial, step_password_file)
+        local t_args = string.format("%s --revoke --provisioner=admin --password-file='%s'", serial, step_password_file)
+        local token_cmd = string.format("STEPPATH='%s' step ca token %s 2>&1", step_ca_base, t_args)
         local raw_token = exec_as_stepca(token_cmd)
         -- Remove ANSI escape codes
         raw_token = raw_token:gsub("%[0;%d+;%d+m", ""):gsub("%[%d+m", ""):gsub("%[0m", "")
@@ -1301,16 +1316,21 @@ function mymodule.revoke_certificate(clientdata)
         
         if token ~= "" then
             -- POSITIONAL (serial) FIRST
-            local args = string.format("%s --token='%s' --reasonCode=%s", serial, token, reason_code)
-            output = stepca_exec("ca", "revoke", args, { use_pass = false })
+            local rev_flags = {
+                string.format("--token='%s'", token),
+                string.format("--reasonCode=%s", reason_code),
+            }
+            output = stepca_exec("ca", "revoke", rev_flags, {serial}, { use_pass = false })
         else
             output = "Error generating revocation token: " .. raw_token
         end
     else
         -- OFFLINE: Access DB directly (safe because daemon is stopped)
-        -- POSITIONAL (serial) FIRST
-        local args = string.format("%s --offline --reasonCode=%s", serial, reason_code)
-        output = stepca_exec("ca", "revoke", args, { use_pass = true, pass_flag = "--password-file" })
+        local rev_flags = {
+            "--offline",
+            string.format("--reasonCode=%s", reason_code),
+        }
+        output = stepca_exec("ca", "revoke", rev_flags, {serial}, { use_pass = true, pass_flag = "--password-file" })
     end
 
     -- Robust success detection (must not match help text)
@@ -1394,9 +1414,17 @@ end
 -- Form for adding a new template
 function mymodule.get_add_template_form(clientdata)
     return {
-        template_type = create_cfe("template_type", clientdata.template_type or "x509", "Template Type", "Prefixes the filename for organization", "select", {"x509", "ssh-user", "ssh-host", "none"}),
-        template_name = create_cfe("template_name", "", "Template Name", "e.g., wifi-leaf.tpl (must end in .tpl or .json)", "text"),
-        content = create_cfe("content", "{\n    \"subject\": {{ toJson .Subject }},\n    \"sans\": {{ toJson .SANs }}\n}", "Initial Content", "", "longtext")
+        template_type = create_cfe(
+            "template_type", clientdata.template_type or "x509", "Template Type",
+            "Prefixes filename for organization", "select", {"x509", "ssh-user", "ssh-host", "none"}
+        ),
+        template_name = create_cfe(
+            "template_name", "", "Template Name", "e.g., leaf.tpl (ends in .tpl or .json)", "text"
+        ),
+        content = create_cfe(
+            "content", "{\n    \"subject\": {{ toJson .Subject }},\n    \"sans\": {{ toJson .SANs }}\n}",
+            "Content", "", "longtext"
+        )
     }
 end
 
@@ -1435,7 +1463,10 @@ function mymodule.save_template(clientdata)
 
     if not template_name or template_name == "" then
         return {
-            template_type = create_cfe("template_type", template_type or "x509", "Template Type", "", "select", {"x509", "ssh-user", "ssh-host", "none"}),
+            template_type = create_cfe(
+                "template_type", template_type or "x509", "Template Type", "", "select",
+                {"x509", "ssh-user", "ssh-host", "none"}
+            ),
             template_name = create_cfe("template_name", "", "Template Name", "", "text"),
             content = create_cfe("content", content or "", "Template Content", "", "longtext"),
             error = create_cfe("error", "Template name is missing", "Error", "", "text")
@@ -1449,7 +1480,10 @@ function mymodule.save_template(clientdata)
     
     -- Keep template_type in result for addtemplate re-rendering if needed
     if template_type then
-        result.template_type = create_cfe("template_type", template_type, "Template Type", "", "select", {"x509", "ssh-user", "ssh-host", "none"})
+        result.template_type = create_cfe(
+            "template_type", template_type, "Template Type", "", "select",
+            {"x509", "ssh-user", "ssh-host", "none"}
+        )
     end
 
     local template_path = step_ca_base .. "/templates/" .. template_name
@@ -1492,7 +1526,7 @@ function mymodule.save_template(clientdata)
         -- Delete as root (since we created it as root)
         os.remove(tmp_file)
         
-        result.success = create_cfe("success", "Template '" .. template_name .. "' saved successfully.", "Success", "", "text")
+        result.success = create_cfe("success", "Template '" .. template_name .. "' saved.", "Success", "", "text")
     else
         result.error = create_cfe("error", "Failed to create temporary save file", "Error", "", "text")
     end
@@ -1526,7 +1560,7 @@ function mymodule.delete_template(clientdata)
     local cmd = string.format("rm '%s'", template_path)
     local output = exec_as_stepca(cmd)
     
-    result.success = create_cfe("success", "Template '" .. template_name .. "' deleted successfully.", "Success", "", "text")
+    result.success = create_cfe("success", "Template '" .. template_name .. "' deleted.", "Success", "", "text")
     return result
 end
 
@@ -1592,9 +1626,8 @@ function mymodule.list_provisioners()
     end
 
     -- Convert to CFE format
-    for i, prov in ipairs(provisioner_data) do
-        local description = ""
-        local icon = ""
+    for _, prov in ipairs(provisioner_data) do
+        local description, icon
 
         if prov.type == "JWK" then
             description = "JSON Web Key - Password-based authentication"
@@ -1623,7 +1656,10 @@ function mymodule.list_provisioners()
 
     return {
         provisioners = provisioners,
-        count = create_cfe("count", tostring(#provisioners), "Total Provisioners", "Number of configured provisioners", "text")
+        count = create_cfe(
+            "count", tostring(#provisioners), "Total Provisioners",
+            "Number of configured provisioners", "text"
+        )
     }
 end
 
@@ -1831,11 +1867,12 @@ function mymodule.add_provisioner(clientdata)
             local f = io.open(pass_path, "w")
             if f then f:write(prov_password) f:close() end
             exec_command(string.format("chown %s:%s %s && chmod 600 %s", get_stepca_user(), get_stepca_user(), pass_path, pass_path))
-            result.prov_password = create_cfe("prov_password", prov_password, "Generated Provisioner Password", "SAVE THIS PASSWORD NOW.", "text")
+            result.prov_password = create_cfe(
+                "prov_password", prov_password, "Password", "SAVE THIS PASSWORD NOW.", "text"
+            )
         end
-        
         local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
-        result.success = create_cfe("success", "Provisioner '" .. prov_name .. "' added successfully.", "Success", "", "text")
+        result.success = create_cfe("success", "Provisioner '" .. prov_name .. "' added.", "Success", "", "text")
         result.is_running = step_status:match("started")
         result.restart_required = true
     else
@@ -1859,7 +1896,7 @@ function mymodule.delete_provisioner(clientdata)
     end
 
     if not has_jq() then
-        result.error = create_cfe("error", "The 'jq' package is required for provisioner management.", "Error", "", "text")
+        result.error = create_cfe("error", "The 'jq' package is required for management.", "Error", "", "text")
         return result
     end
 
@@ -1889,7 +1926,8 @@ function mymodule.delete_provisioner(clientdata)
         result.is_running = is_running
         result.restart_required = true
     else
-        result.error = create_cfe("error", string.format("Failed to remove provisioner '%s'. The entry still exists in ca.json.", name), "Error", "", "text")
+        local err = string.format("Failed to remove '%s'. Entry still exists in ca.json.", name)
+        result.error = create_cfe("error", err, "Error", "", "text")
     end
 
     return result
@@ -1930,9 +1968,9 @@ function mymodule.get_crl_info()
     -- CRL files are not generated by default
     crl_info.info = create_cfe(
         "info",
-        "This CA uses BadgerDB to track certificate revocations. Revocation status is queried directly from the database using step-badger. Traditional CRL files are not generated.",
+        "This CA uses BadgerDB and step-badger to track revocations. CRL files are not generated.",
         "Revocation Tracking",
-        "How certificate revocations are tracked",
+        "How revocations are tracked",
         "longtext"
     )
 
@@ -1945,7 +1983,7 @@ function mymodule.get_crl_info()
                 "revoked_list",
                 query_result.data,
                 "Revoked Certificates",
-                "List of revoked certificates from BadgerDB (Format: R  expiry  revoke_date  serial_hex  reason  subject)",
+                "R, expiry, revoke_date, serial, reason, subject",
                 "longtext"
             )
         else
@@ -1997,7 +2035,7 @@ function mymodule.refresh_crl()
                 "revoked_list",
                 query_result.data,
                 "Revoked Certificates",
-                "List of revoked certificates from BadgerDB (Format: R  expiry  revoke_date  serial_hex  reason  subject)",
+                "Format: R, expiry, revoke_date, serial, reason, subject",
                 "longtext"
             )
         else
@@ -2168,33 +2206,33 @@ function mymodule.save_config(clientdata)
 
     -- Validate infrastructure thresholds (days)
     if critical_days < 1 or critical_days > 365 then
-        result.error = create_cfe("error", "Infrastructure Critical threshold must be between 1 and 365 days", "Error", "", "text")
+        result.error = create_cfe("error", "Infrastructure Critical must be 1-365 days", "Error", "", "text")
         return result
     end
 
     if warning_days < critical_days or warning_days > 365 then
-        result.error = create_cfe("error", "Infrastructure Warning threshold must be greater than critical threshold and less than 365 days", "Error", "", "text")
+        result.error = create_cfe("error", "Infrastructure Warning must be > critical days", "Error", "", "text")
         return result
     end
 
     if notice_days < warning_days or notice_days > 365 then
-        result.error = create_cfe("error", "Infrastructure Notice threshold must be greater than warning threshold and less than 365 days", "Error", "", "text")
+        result.error = create_cfe("error", "Infrastructure Notice must be > warning days", "Error", "", "text")
         return result
     end
 
     -- Validate ephemeral thresholds (percentages)
     if critical_percent < 1 or critical_percent > 100 then
-        result.error = create_cfe("error", "Ephemeral Critical threshold must be between 1 and 100 percent", "Error", "", "text")
+        result.error = create_cfe("error", "Ephemeral Critical must be 1-100%", "Error", "", "text")
         return result
     end
 
     if warning_percent < critical_percent or warning_percent > 100 then
-        result.error = create_cfe("error", "Ephemeral Warning threshold must be greater than critical threshold and less than 100 percent", "Error", "", "text")
+        result.error = create_cfe("error", "Ephemeral Warning must be > critical %", "Error", "", "text")
         return result
     end
 
     if notice_percent < warning_percent or notice_percent > 100 then
-        result.error = create_cfe("error", "Ephemeral Notice threshold must be greater than warning threshold and less than 100 percent", "Error", "", "text")
+        result.error = create_cfe("error", "Ephemeral Notice must be > warning %", "Error", "", "text")
         return result
     end
 
@@ -2263,9 +2301,9 @@ function mymodule.get_audit_log(clientdata)
     local lines = clientdata.lines or "100"
 
     -- Get step-ca logs (from journald or syslog)
-    local step_log = exec_command("tail -n " .. lines .. " /var/log/step-ca.log 2>/dev/null")
+    local log_output = exec_command("tail -n " .. lines .. " /var/log/step-ca.log 2>/dev/null")
     log.step_log = create_cfe(
-        step_log,
+        log_output,
         "step-ca Log",
         "Recent certificate authority operations",
         "longtext"
@@ -2387,6 +2425,14 @@ function mymodule.get_setup_form(clientdata)
         "text"
     )
 
+    form.enable_ssh = create_cfe(
+        "enable_ssh",
+        clientdata.enable_ssh or "false",
+        "Enable SSH Certificate Authority",
+        "Generate SSH CA keys so this CA can sign SSH host and user certificates",
+        "checkbox"
+    )
+
     form.gen_intermediate = create_cfe(
         "gen_intermediate",
         clientdata.gen_intermediate or "true",
@@ -2449,6 +2495,7 @@ function mymodule.initialize_ca(clientdata)
     local ca_provisioner = clientdata.ca_provisioner or "admin"
     local ca_port = clientdata.ca_port or default_port
     local ca_validity_years = tonumber(clientdata.ca_validity_years) or 10
+    local enable_ssh = (clientdata.enable_ssh == "true" or clientdata.enable_ssh == "on")
     local gen_intermediate = (clientdata.gen_intermediate == "true" or clientdata.gen_intermediate == "on")
     local intermediate_validity_years = tonumber(clientdata.intermediate_validity_years) or 5
     local server_cert_validity_days = tonumber(clientdata.server_cert_validity_days) or 365
@@ -2500,13 +2547,14 @@ function mymodule.initialize_ca(clientdata)
 
     -- Initialize Root CA
     local init_cmd = string.format(
-        "STEPPATH='%s' step ca init --name '%s' --dns '%s' --address ':%s' --provisioner '%s' --password-file '%s' --deployment-type standalone 2>&1",
+        "STEPPATH='%s' step ca init --name '%s' --dns '%s' --address ':%s' --provisioner '%s' --password-file '%s' --deployment-type standalone%s 2>&1",
         step_ca_base,
         ca_name,
         ca_common_name,
         ca_port,
         ca_provisioner,
-        step_password_file
+        step_password_file,
+        enable_ssh and " --ssh" or ""
     )
 
     local init_output = exec_as_stepca(init_cmd)
@@ -2583,6 +2631,16 @@ function mymodule.initialize_ca(clientdata)
         "CRITICAL: Save this password securely. It protects your CA private keys and cannot be recovered!",
         "password"
     )
+
+    if enable_ssh then
+        result.ssh_info = create_cfe(
+            "ssh_info",
+            "SSH CA keys generated: " .. step_ca_base .. "/certs/ssh_host_ca_key.pub and ssh_user_ca_key.pub",
+            "SSH CA Initialized",
+            "",
+            "info"
+        )
+    end
 
     result.password_warning = create_cfe(
         "password_warning",
@@ -2769,9 +2827,8 @@ function mymodule.create_client_certificate(clientdata)
 
         result.success = create_cfe("Client certificate created", "Success", "", "success")
 
-        result.cert_pem = create_cfe(fs.read_file(cert_path), "Client Certificate (PEM)", "Install on client", "longtext")
-
-        result.key_pem = create_cfe(fs.read_file(key_path), "Private Key (PEM)", "Install on client (keep secure)", "longtext")
+        result.cert_pem = create_cfe(fs.read_file(cert_path), "Certificate (PEM)", "Install on client", "longtext")
+        result.key_pem = create_cfe(fs.read_file(key_path), "Private Key (PEM)", "Keep secure", "longtext")
 
 
 
@@ -2794,21 +2851,13 @@ function mymodule.create_client_certificate(clientdata)
 
 
         -- Client-type specific instructions
-
-        local instructions = ""
-
+        local instructions
         if client_type == "netapp" then
-
-            instructions = "NetApp ONTAP Installation:\n1. security certificate install -type server-ca (Root CA)\n2. security certificate install -type client (Client Cert + Key)\n3. security key-manager external add-servers -key-servers <this-server>:5696"
-
+            instructions = "NetApp ONTAP: See manual for 'security certificate install' steps."
         elseif client_type == "vmware-vsphere" then
-
-            instructions = "VMware vSphere Installation:\n1. Add this server as KMS cluster in vCenter\n2. Upload Root CA certificate\n3. Upload client certificate and key\n4. Set KMIP server address to <this-server>:5696"
-
+            instructions = "VMware: Add as KMS cluster and upload CA/Client certs."
         else
-
-            instructions = "Generic Client Installation:\n1. Install Root CA as trusted certificate\n2. Install client certificate and private key\n3. Configure server address to use this certificate"
-
+            instructions = "Generic: Install Root CA and client certificate/key."
         end
 
 
@@ -2841,14 +2890,14 @@ function mymodule.get_provisioner_details(clientdata)
     end
 
     if not has_jq() then
-        return { error = create_cfe("error", "The 'jq' utility is required to view provisioner details.", "Error", "", "text") }
+        return { error = create_cfe("error", "The 'jq' utility is required.", "Error", "", "text") }
     end
 
     local filter = '.authority.provisioners[] | select(.name == "' .. prov_name .. '")'
     local full_json = exec_command("jq '" .. filter .. "' " .. step_config)
     
     if full_json == "" or full_json:lower():match("null") then
-        return { error = create_cfe("error", "Provisioner '" .. prov_name .. "' not found in configuration.", "Error", "", "text") }
+        return { error = create_cfe("error", "Provisioner '" .. prov_name .. "' not found.", "Error", "", "text") }
     end
 
     -- Extract specific parts for easier viewing
@@ -2935,7 +2984,10 @@ function mymodule.generate_token(clientdata)
     if token then
         return {
             success = create_cfe("success", "Token generated successfully for " .. subject, "Success", "", "text"),
-            token = create_cfe("token", token, "Generated Token (JWT)", "Copy and use this token with 'step ca certificate --token <token>'", "longtext"),
+            token = create_cfe(
+                "token", token, "Token (JWT)",
+                "Use with: 'step ca certificate --token <token>'", "longtext"
+            ),
             subject = create_cfe("subject", subject, "Subject", "", "text"),
             prov_name = create_cfe("prov_name", prov_name, "Provisioner", "", "text")
         }
@@ -2952,7 +3004,7 @@ end
 function mymodule.get_global_claims()
     local config_content = fs.read_file(step_config)
     local claims = {}
-    
+
     -- Basic extraction of global claims
     -- Using jq if available is much safer for reading too
     if has_jq() then
@@ -2967,9 +3019,9 @@ function mymodule.get_global_claims()
     end
 
     return {
-        min_dur = create_cfe("min_dur", claims.min_dur, "Global Min Duration", "e.g., 5m, 1h", "text"),
-        max_dur = create_cfe("max_dur", claims.max_dur, "Global Max Duration", "e.g., 24h, 365d (8760h)", "text"),
-        default_dur = create_cfe("default_dur", claims.default_dur, "Global Default Duration", "e.g., 24h", "text"),
+        min_dur = create_cfe("min_dur", claims.min_dur, "Global Min", "e.g., 5m, 1h", "text"),
+        max_dur = create_cfe("max_dur", claims.max_dur, "Global Max", "e.g., 24h, 365d", "text"),
+        default_dur = create_cfe("default_dur", claims.default_dur, "Global Default", "e.g., 24h", "text"),
         has_jq = create_cfe("has_jq", tostring(has_jq()), "JQ Available", "", "boolean")
     }
 end
@@ -2979,7 +3031,7 @@ function mymodule.save_global_claims(clientdata)
     local result = mymodule.get_global_claims()
 
     if not has_jq() then
-        result.error = create_cfe("error", "Advanced configuration requires 'jq' package. Please install it: apk add jq", "Error", "", "text")
+        result.error = create_cfe("error", "Advanced config requires 'jq'. Install: apk add jq", "Error", "", "text")
         return result
     end
 

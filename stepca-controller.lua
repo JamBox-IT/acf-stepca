@@ -64,17 +64,7 @@ end
 
 -- List all certificates
 function mymodule.listcerts(self)
-    return self.model.list_certificates()
-end
-
--- List infrastructure certificates only (CA, Server, Client, Client-Server)
-function mymodule.listinfra(self)
-    return self.model.list_certificates_infrastructure()
-end
-
--- List ephemeral certificates only (WiFi, short-lived)
-function mymodule.listephe(self)
-    return self.model.list_certificates_ephemeral()
+    return self.model.list_certificates(self.clientdata)
 end
 
 -- List certificates with expiration tracking
