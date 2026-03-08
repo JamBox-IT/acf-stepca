@@ -17,7 +17,7 @@ SUPPORT_SCRIPTS=
 DOAS_CONF_SRC=stepca-download.conf.doas
 DOAS_CONF_DEST=stepca-download.conf
 
-EXTRA_DIST=README Makefile config.mk
+EXTRA_DIST=README Makefile config.mk lsp-check.awk
 
 DISTFILES=$(APP_DIST) $(SUPPORT_SCRIPTS) $(CGI_SCRIPT) $(DOAS_CONF_SRC) $(EXTRA_DIST)
 
@@ -34,9 +34,9 @@ clean:
 check:
 	# Lint Lua files
 	luacheck $(APP_NAME)*.lua
-	# Basic syntax check for LSP files (extracting Lua within <% %> blocks)
+	# Syntax check LSP files: extract statement blocks only (see lsp-check.awk)
 	for f in $(APP_NAME)*.lsp; do \
-		sed -n '/<%/ , /%>/p' "$$f" | sed 's/<%//g; s/%>//g' | luac -p - || exit 1; \
+		awk -f lsp-check.awk "$$f" | luac -p - || exit 1; \
 	done
 	# Lint shell scripts (if any)
 	if [ -n "$(SUPPORT_SCRIPTS)" ]; then shellcheck -s ash $(SUPPORT_SCRIPTS); fi
