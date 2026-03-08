@@ -125,7 +125,7 @@ local function validate_hostname(hostname, field_name)
 local function get_ca_address()
     local port = default_port
     local host = "localhost"
-    
+
     if posix.stat(step_config) ~= nil then
         -- Discover hostname from dnsNames
         if has_jq() then
@@ -144,7 +144,7 @@ local function get_ca_address()
             local content = fs.read_file(step_config)
             addr = content:match('"address"%s*:%s*"([^"]+)"')
         end
-        
+
         if addr and addr ~= "" and addr ~= "null" then
             if addr:match("^:") then
                 return "https://" .. host .. addr
@@ -261,12 +261,12 @@ end
 
 local function get_cert_metadata(cert_path)
     if not file_exists(cert_path) then return nil end
-    
+
     -- We need the serial in hex to match step-badger, but JSON gives decimal.
     -- We'll get both by using two passes or parsing text.
     local text_cmd = string.format("step certificate inspect %s 2>/dev/null", cert_path)
     local text_output = exec_command(text_cmd)
-    
+
     local meta = {}
     -- Extract hex serial from "Serial Number: <decimal> (0x<hex>)"
     local hex_serial = text_output:match("Serial Number:.-%(0x(%x+)%)")
@@ -274,38 +274,40 @@ local function get_cert_metadata(cert_path)
         -- Fallback for different output versions
         hex_serial = text_output:match("Serial Number:%s+(%x+)")
     end
-    
+
     if hex_serial then
         meta.serial = hex_serial:upper():gsub("^0+", "")
         if meta.serial == "" then meta.serial = "0" end
     end
-    
+
     -- Now get the rest from JSON for accuracy
     local json_cmd = string.format("step certificate inspect --format json %s 2>/dev/null", cert_path)
     local json_output = exec_command(json_cmd)
-    
+
     if has_jq() then
         local jq_cmd = "echo '%s' | jq -r '%s'"
         local sub_filter = ".subject.common_name[0] // .subject[0] // .subject_dn"
         meta.subject = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), sub_filter)):gsub("%s+", "")
-        
+
         -- Only use JSON serial if text extraction failed (will be decimal)
         if not meta.serial then
             local ser_filter = ".serial_number"
-            local raw_serial = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ser_filter)):gsub("%s+", ""):upper()
+            local escaped = json_output:gsub("'", "'\\''")
+            local raw_serial = exec_command(string.format(jq_cmd, escaped, ser_filter)):gsub("%s+", ""):upper()
             meta.serial = raw_serial:gsub("^0+", "")
             if meta.serial == "" then meta.serial = "0" end
         end
-        
-        meta.not_after = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".validity.end")):gsub("%s+", "")
-        meta.not_before = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ".validity.start")):gsub("%s+", "")
-        
+
+        local escaped_out = json_output:gsub("'", "'\\''")
+        meta.not_after = exec_command(string.format(jq_cmd, escaped_out, ".validity.end")):gsub("%s+", "")
+        meta.not_before = exec_command(string.format(jq_cmd, escaped_out, ".validity.start")):gsub("%s+", "")
+
         -- Detect EKU accurately (extract keys as strings)
         local eku_filter = ".extensions.extended_key_usage | keys[] // empty"
         local ekus = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), eku_filter))
         meta.has_server_auth = ekus:match("server_auth") or ekus:match("1.3.6.1.5.5.7.3.1")
         meta.has_client_auth = ekus:match("client_auth") or ekus:match("1.3.6.1.5.5.7.3.2")
-        
+
         -- Detect CA status
         local ca_filter = ".extensions.basic_constraints.is_ca // false"
         meta.is_ca = exec_command(string.format(jq_cmd, json_output:gsub("'", "'\\''"), ca_filter)):match("true")
@@ -319,7 +321,7 @@ local function get_cert_metadata(cert_path)
         meta.has_client_auth = inspect_text:match("Client Authentication")
         meta.is_ca = inspect_text:match("CA: true") or inspect_text:match("CA:TRUE")
     end
-    
+
     return meta
 end
 
@@ -337,7 +339,7 @@ end
 -- Helper to validate duration format
 local function validate_duration(input, field_name)
     if not input or input == "" then return nil end -- Allow empty (skipped)
-    
+
     if not input:match("^%d+[hdms]$") then
         local msg = "Invalid format for %s: '%s'. Use a number followed by s, m, h, or d (e.g., 24h, 365d)."
         return string.format(msg, field_name, input)
@@ -396,10 +398,10 @@ end
 -- Helper function to parse Step-CA date format to os.time
 local function parse_date_to_epoch(date_str)
     if not date_str or date_str == "" or date_str == "null" then return nil end
-    
+
     -- ISO Format (step json): 2026-03-04T23:04:34Z
     local year, month, day, hour, min, sec = date_str:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)Z")
-    
+
     if not year then
         -- ISO Format with fractional seconds: 2026-03-04T23:04:34.000Z
         year, month, day, hour, min, sec = date_str:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.%d+Z")
@@ -417,7 +419,8 @@ local function parse_date_to_epoch(date_str)
 
     if not year then
         -- Alternate format: Mar 5 00:00:00 2025 UTC
-        local month_name, day_str, hour_str, min_str, sec_str, year_str = date_str:match("(%a+)%s+(%d+)%s+(%d+):(%d+):(%d+)%s+(%d+)")
+        local pat = "(%a+)%s+(%d+)%s+(%d+):(%d+):(%d+)%s+(%d+)"
+        local month_name, day_str, hour_str, min_str, sec_str, year_str = date_str:match(pat)
         if month_name then
             local months = {Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6, Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12}
             month = months[month_name]
@@ -453,7 +456,7 @@ local function detect_cert_type(cert_path, cert_name)
     if not meta then return "Unknown", false end
 
     if meta.is_ca then return "CA", false end
-    
+
     if meta.has_server_auth and meta.has_client_auth then
         return "Client-Server", false
     elseif meta.has_server_auth then
@@ -471,7 +474,7 @@ local function is_infrastructure_cert(cert_type)
         ["Root CA"] = true, ["Intermediate CA"] = true, ["CA"] = true,
         ["Server"] = true, ["Client-Server"] = true
     }
-    
+
     -- Client (pure client auth) and User Certs are Ephemeral
     if cert_type == "Client" or cert_type == "User Certificate" then
         return false
@@ -738,7 +741,7 @@ local function load_bulk_certificate_data()
     end
 
     local exec_time = end_time - start_time
-    local found_data = false    
+    local found_data = false
     -- Parse OpenSSL-formatted output:
     -- V    expiry    serial_hex    subject
     -- R    expiry    revoke_date    serial_hex    reason    subject
@@ -801,13 +804,13 @@ function mymodule.list_certificates(clientdata)
 
         if cert_name then
             local cert_file = step_certs_path .. "/" .. filename
-            
+
             -- 1. Try to find metadata in bulk DB data
             local meta = get_cert_metadata(cert_file)
             if meta then
                 local serial = meta.serial
                 local db_meta = db_certs[serial]
-                
+
                 -- Detect certificate type
                 local cert_type, is_system_cert = detect_cert_type(cert_file, cert_name)
 
@@ -820,10 +823,10 @@ function mymodule.list_certificates(clientdata)
                 -- Calculate lifetime/expiration
                 local days_remaining = nil
                 local total_lifetime_days = nil
-                
+
                 local exp_epoch = parse_date_to_epoch(not_after)
                 local start_epoch = parse_date_to_epoch(not_before)
-                
+
                 if exp_epoch then
                     days_remaining = math.floor((exp_epoch - os.time()) / 86400)
                     if start_epoch then
@@ -948,7 +951,7 @@ end
 function mymodule.export_certificate(clientdata)
     local cert_name = clientdata.cert_name
     local type = clientdata.type or "cert"
-    
+
     if not cert_name or cert_name == "" then
         return { error = create_cfe("error", "Certificate name is required", "Error", "", "text") }
     end
@@ -960,36 +963,36 @@ function mymodule.export_certificate(clientdata)
 
     local cert_path = step_certs_path .. "/" .. cert_name .. ".crt"
     local key_path = step_certs_path .. "/" .. cert_name .. ".key"
-    local content = ""
+    local content
     local filename = cert_name
 
     -- Check if this is a system cert
     local is_system_cert = (cert_name == "root_ca" or cert_name == "intermediate_ca")
 
     if type == "cert" then
-        if not file_exists(cert_path) then 
-            return { error = create_cfe("error", "Certificate file not found", "Error", "", "text") } 
+        if not file_exists(cert_path) then
+            return { error = create_cfe("error", "Certificate file not found", "Error", "", "text") }
         end
         -- We must read as step-ca user since nobody (web server) cannot read these files
         content = exec_as_stepca("cat " .. cert_path)
         filename = filename .. ".crt"
-    
+
     elseif type == "key" then
         if is_system_cert then
             return { error = create_cfe("error", "System private keys are protected", "Error", "", "text") }
         end
-        if not file_exists(key_path) then 
-            return { error = create_cfe("error", "Private key not found", "Error", "", "text") } 
+        if not file_exists(key_path) then
+            return { error = create_cfe("error", "Private key not found", "Error", "", "text") }
         end
         content = exec_as_stepca("cat " .. key_path)
         filename = filename .. ".key"
-    
+
     elseif type == "bundle" then
         if is_system_cert then
             return { error = create_cfe("error", "System private keys are protected", "Error", "", "text") }
         end
-        if not file_exists(cert_path) or not file_exists(key_path) then 
-            return { error = create_cfe("error", "Certificate or key not found", "Error", "", "text") } 
+        if not file_exists(cert_path) or not file_exists(key_path) then
+            return { error = create_cfe("error", "Certificate or key not found", "Error", "", "text") }
         end
         local c = exec_as_stepca("cat " .. cert_path)
         local k = exec_as_stepca("cat " .. key_path)
@@ -1117,7 +1120,7 @@ function mymodule.create_certificate(clientdata)
 
     local step_status = exec_command("rc-service step-ca status 2>&1")
     local is_running = step_status:match("started")
-    
+
     local validity_duration = (tonumber(clientdata.validity_days or 365) * 24) .. "h"
     local provisioner = clientdata.provisioner or "admin"
     local cert_profile = clientdata.cert_profile or "leaf"
@@ -1205,9 +1208,11 @@ function mymodule.create_certificate(clientdata)
         result.key_path = create_cfe("key_path", key_path, "Private Key Path", "", "text")
     else
         -- Clean up messy help output from step-cli
-        local clean_output = output:gsub("NAME:.*", ""):gsub("USAGE:.*", ""):gsub("OPTIONS:.*", ""):gsub("EXAMPLES:.*", ""):gsub("DESCRIPTION:.*", "")
-        clean_output = clean_output:gsub("%[0;%d+;%d+m", ""):gsub("%[0m", "") 
-        
+        local clean_output = output:gsub("NAME:.*", ""):gsub("USAGE:.*", "")
+        clean_output = clean_output:gsub("OPTIONS:.*", ""):gsub("EXAMPLES:.*", ""):gsub("DESCRIPTION:.*", "")
+        clean_output = clean_output:gsub("%[0;%d+;%d+m", ""):gsub("%[0m", "")
+
+
         result.error = create_cfe("error", "Certificate creation failed: " .. clean_output, "Error", "", "text")
     end
 
@@ -1301,8 +1306,8 @@ function mymodule.revoke_certificate(clientdata)
     -- Check service status to decide track
     local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
     local is_running = step_status:match("started")
-    
-    local output = ""
+
+    local output
     if is_running then
         -- ONLINE: Must generate a token first for non-interactive revocation
         local t_args = string.format("%s --revoke --provisioner=admin --password-file='%s'", serial, step_password_file)
@@ -1310,10 +1315,10 @@ function mymodule.revoke_certificate(clientdata)
         local raw_token = exec_as_stepca(token_cmd)
         -- Remove ANSI escape codes
         raw_token = raw_token:gsub("%[0;%d+;%d+m", ""):gsub("%[%d+m", ""):gsub("%[0m", "")
-        
+
         -- Extract only the JWT (starts with ey and contains dots)
         local token = raw_token:match("(eyJ[%w%-_%.]+)") or ""
-        
+
         if token ~= "" then
             -- POSITIONAL (serial) FIRST
             local rev_flags = {
@@ -1335,10 +1340,10 @@ function mymodule.revoke_certificate(clientdata)
 
     -- Robust success detection (must not match help text)
     -- Look for the actual confirmation message from step CLI
-    local is_success = output:match("Certificate with Serial Number.*has been revoked") or 
+    local is_success = output:match("Certificate with Serial Number.*has been revoked") or
                        output:match("Certificate with Serial Number.*is already revoked") or
                        (output:lower():match("success") and not output:lower():match("usage"))
-    
+
     if is_success then
         -- Determine if this was a new revocation or already revoked
         local message = "Certificate revoked successfully"
@@ -1385,10 +1390,10 @@ end
 function mymodule.list_templates()
     local templates = {}
     local template_dir = step_ca_base .. "/templates"
-    
+
     -- Ensure directory exists
     exec_as_stepca("mkdir -p " .. template_dir)
-    
+
     local template_files = exec_as_stepca("ls -1 " .. template_dir .. " 2>/dev/null")
     for filename in template_files:gmatch("[^\n]+") do
         -- Trim only leading/trailing whitespace
@@ -1401,7 +1406,7 @@ function mymodule.list_templates()
             })
         end
     end
-    
+
     -- Sort templates by name
     table.sort(templates, function(a, b) return a.name.value < b.name.value end)
 
@@ -1477,7 +1482,7 @@ function mymodule.save_template(clientdata)
         template_name = create_cfe("template_name", template_name, "Template Name", "", "text"),
         content = create_cfe("content", content, "Template Content (JSON/Go Template)", "", "longtext")
     }
-    
+
     -- Keep template_type in result for addtemplate re-rendering if needed
     if template_type then
         result.template_type = create_cfe(
@@ -1487,7 +1492,7 @@ function mymodule.save_template(clientdata)
     end
 
     local template_path = step_ca_base .. "/templates/" .. template_name
-    
+
     -- Safety check: prevent path traversal
     if template_name:match("/") or template_name:match("%.%.") then
         result.error = create_cfe("error", "Invalid template name", "Error", "", "text")
@@ -1518,14 +1523,14 @@ function mymodule.save_template(clientdata)
     if f then
         f:write(content)
         f:close()
-        
+
         -- Copy as step-ca user
         local cmd = string.format("cp '%s' '%s'", tmp_file, template_path)
         local output = exec_as_stepca(cmd)
-        
+
         -- Delete as root (since we created it as root)
         os.remove(tmp_file)
-        
+
         result.success = create_cfe("success", "Template '" .. template_name .. "' saved.", "Success", "", "text")
     else
         result.error = create_cfe("error", "Failed to create temporary save file", "Error", "", "text")
@@ -1545,7 +1550,7 @@ function mymodule.delete_template(clientdata)
     end
 
     local template_path = step_ca_base .. "/templates/" .. template_name
-    
+
     -- Safety check
     if template_name:match("/") or template_name:match("%.%.") then
         result.error = create_cfe("error", "Invalid template name", "Error", "", "text")
@@ -1559,7 +1564,7 @@ function mymodule.delete_template(clientdata)
 
     local cmd = string.format("rm '%s'", template_path)
     local output = exec_as_stepca(cmd)
-    
+
     result.success = create_cfe("success", "Template '" .. template_name .. "' deleted.", "Success", "", "text")
     return result
 end
@@ -1731,10 +1736,10 @@ function mymodule.get_add_provisioner_form(clientdata)
     local ssh_templates = {"None"}
     local template_dir = step_ca_base .. "/templates"
     local template_output = exec_as_stepca("ls -1 " .. template_dir .. " 2>/dev/null")
-    
+
     local found_x509 = {}
     local found_ssh = {}
-    
+
     for filename in template_output:gmatch("[^\n]+") do
         filename = filename:match("^%s*(.-)%s*$")
         if filename ~= "" and (filename:lower():match("%.tpl$") or filename:lower():match("%.json$")) then
@@ -1749,10 +1754,10 @@ function mymodule.get_add_provisioner_form(clientdata)
             end
         end
     end
-    
+
     table.sort(found_x509)
     table.sort(found_ssh)
-    
+
     for _, t in ipairs(found_x509) do table.insert(x509_templates, t) end
     for _, t in ipairs(found_ssh) do table.insert(ssh_templates, t) end
 
@@ -1811,30 +1816,32 @@ function mymodule.add_provisioner(clientdata)
         -- JWK requires special handling to bypass TTY prompts during key generation
         prov_password = exec_command("cat /proc/sys/kernel/random/uuid | sed 's/-//g'"):gsub("%s+", "")
         local pass_path = step_secrets_path .. "/provisioner_" .. prov_name .. ".pass"
-        
+
         -- Save the password securely first
         local f_pass = io.open("/tmp/prov_pass.tmp", "w")
         if f_pass then f_pass:write(prov_password) f_pass:close() end
-        exec_command(string.format("cp /tmp/prov_pass.tmp %s && chown %s:%s %s && chmod 600 %s && rm /tmp/prov_pass.tmp", 
-            pass_path, get_stepca_user(), get_stepca_user(), pass_path, pass_path))
+        local cp_cmd = string.format(
+            "cp /tmp/prov_pass.tmp %s && chown %s:%s %s && chmod 600 %s && rm /tmp/prov_pass.tmp",
+            pass_path, get_stepca_user(), get_stepca_user(), pass_path, pass_path)
+        exec_command(cp_cmd)
 
         -- Use the standard 'step ca provisioner add' with --create
         -- Providing --password-file here is the key to preventing the prompt during key creation
         args = args .. string.format("--type JWK --create --password-file='%s' ", pass_path)
-    
+
     elseif clientdata.prov_type == "OIDC" then
         args = args .. string.format("--type OIDC --client-id '%s' --client-secret '%s' --configuration-endpoint '%s' ",
             client_id, client_secret, config_endpoint)
-    
+
     elseif clientdata.prov_type == "ACME" then
         args = args .. "--type ACME "
-    
+
     elseif clientdata.prov_type == "SCEP" then
         args = args .. "--type SCEP "
         if clientdata.scep_challenge and clientdata.scep_challenge ~= "" then
             args = args .. string.format("--challenge '%s' ", clientdata.scep_challenge:gsub("'", "'\\''"))
         end
-    
+
     elseif clientdata.prov_type == "SSHPOP" then
         args = args .. "--type SSHPOP "
     end
@@ -1849,16 +1856,17 @@ function mymodule.add_provisioner(clientdata)
 
     -- Add the NAME as the ONLY positional argument
     args = args .. string.format("'%s'", prov_name)
-    
+
     local final_cmd = "step ca provisioner add " .. args
     local output = exec_as_stepca(final_cmd .. " 2>&1")
-    
+
     -- Capture debug state
     result.debug_cmd.value = "Internal Command: " .. final_cmd .. "\nOutput: " .. output
 
     -- 4. Verify Success
-    local is_success = output:lower():match("success") or output == "" or 
-                       exec_command(string.format("grep -q '\"name\":%s\"%s\"' %s; echo $?", "%s*", prov_name, step_config)):match("0")
+    local grep_check = string.format("grep -q '\"name\":%s\"%s\"' %s; echo $?", "%s*", prov_name, step_config)
+    local is_success = output:lower():match("success") or output == "" or
+                       exec_command(grep_check):match("0")
 
     if is_success then
         -- Persistent password storage for admin recovery
@@ -1866,18 +1874,22 @@ function mymodule.add_provisioner(clientdata)
             local pass_path = step_secrets_path .. "/provisioner_" .. prov_name .. ".pass"
             local f = io.open(pass_path, "w")
             if f then f:write(prov_password) f:close() end
-            exec_command(string.format("chown %s:%s %s && chmod 600 %s", get_stepca_user(), get_stepca_user(), pass_path, pass_path))
+            local chown_cmd = string.format("chown %s:%s %s && chmod 600 %s",
+                get_stepca_user(), get_stepca_user(), pass_path, pass_path)
+            exec_command(chown_cmd)
             result.prov_password = create_cfe(
                 "prov_password", prov_password, "Password", "SAVE THIS PASSWORD NOW.", "text"
             )
         end
         local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
-        result.success = create_cfe("success", "Provisioner '" .. prov_name .. "' added.", "Success", "", "text")
+        result.success = create_cfe(
+            "success", "Provisioner '" .. prov_name .. "' added.", "Success", "", "text")
         result.is_running = step_status:match("started")
         result.restart_required = true
     else
         -- Clean output of ANSI colors and excessive whitespace
-        local clean_output = output:gsub("%[%d+;%d+;%d+m", ""):gsub("%[%d+;%d+m", ""):gsub("%[%d+m", ""):gsub("%[0m", "")
+        local clean_output = output:gsub("%[%d+;%d+;%d+m", ""):gsub("%[%d+;%d+m", "")
+        clean_output = clean_output:gsub("%[%d+m", ""):gsub("%[0m", "")
         clean_output = clean_output:gsub("^%s+", ""):gsub("%s+$", "")
         result.error = create_cfe("error", "Failed to add provisioner: " .. clean_output, "Error", "", "text")
     end
@@ -1903,18 +1915,20 @@ function mymodule.delete_provisioner(clientdata)
     -- Surgical removal via jq
     local filter = string.format('del(.authority.provisioners[] | select(.name == "%s"))', name)
     local tmp_file = "/tmp/ca.json.tmp"
-    local cmd = string.format("jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
+    local cmd = string.format(
+        "jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
     exec_as_stepca(cmd)
 
     -- Verify removal
-    local check_cmd = string.format("jq -r '.authority.provisioners[] | select(.name == \"%s\") | .name' %s", name, step_config)
+    local check_cmd = string.format(
+        "jq -r '.authority.provisioners[] | select(.name == \"%s\") | .name' %s", name, step_config)
     local check_output = exec_command(check_cmd):gsub("%s+", "")
 
     if check_output == "" then
         -- Check service status for context-specific feedback
         local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
         local is_running = step_status:match("started")
-        
+
         local success_msg = string.format("Provisioner '%s' removed successfully from ca.json.", name)
         if is_running then
             success_msg = success_msg .. " Restart or reload step-ca service to apply changes."
@@ -2074,13 +2088,15 @@ function mymodule.list_clients()
     local clients = {}
 
     -- Find client certificates (exclude server, CA, and webui certs)
-    local cert_files = exec_command("ls -1 " .. step_certs_path .. "/*-client.crt " .. step_certs_path .. "/client*.crt 2>/dev/null")
+    local cert_files = exec_command(
+        "ls -1 " .. step_certs_path .. "/*-client.crt " .. step_certs_path .. "/client*.crt 2>/dev/null")
 
     for cert_file in cert_files:gmatch("[^\n]+") do
         local cert_name = cert_file:match("([^/]+)%.crt$")
         if cert_name then
             -- Get certificate expiration
-            local expiry_cmd = "step certificate inspect " .. cert_file .. " --format json 2>/dev/null | grep -o '\"not_after\":\"[^\"]*\"'"
+            local expiry_cmd = "step certificate inspect " .. cert_file ..
+                " --format json 2>/dev/null | grep -o '\"not_after\":\"[^\"]*\"'"
             local expiry = exec_command(expiry_cmd)
 
             table.insert(clients, {
@@ -2240,14 +2256,15 @@ function mymodule.save_config(clientdata)
     if has_jq() and posix.stat(step_config) ~= nil then
         local current_dns = exec_command("jq -r '.dnsNames[0]' " .. step_config):gsub("%s+", "")
         local current_addr = exec_command("jq -r '.address' " .. step_config):gsub("%s+", "")
-        
+
         local new_dns = clientdata.ca_dns or current_dns
         local new_addr = clientdata.ca_address or current_addr
-        
+
         if new_dns ~= current_dns or new_addr ~= current_addr then
             local filter = string.format('.dnsNames[0] = "%s" | .address = "%s"', new_dns, new_addr)
             local tmp_file = "/tmp/ca.json.net.tmp"
-            local cmd = string.format("jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
+            local cmd = string.format(
+                "jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
             exec_as_stepca(cmd)
             result.ca_dns.value = new_dns
             result.ca_address.value = new_addr
@@ -2529,7 +2546,8 @@ function mymodule.initialize_ca(clientdata)
     end
 
     -- Create step-ca directories with correct ownership
-    exec_command("mkdir -p " .. step_ca_base .. "/config " .. step_ca_base .. "/certs " .. step_ca_base .. "/secrets " .. step_ca_base .. "/db")
+    exec_command("mkdir -p " .. step_ca_base .. "/config " .. step_ca_base .. "/certs "
+        .. step_ca_base .. "/secrets " .. step_ca_base .. "/db")
 
     -- Save password to file with secure permissions
     local pass_handle = io.open(step_password_file, "w")
@@ -2547,7 +2565,8 @@ function mymodule.initialize_ca(clientdata)
 
     -- Initialize Root CA
     local init_cmd = string.format(
-        "STEPPATH='%s' step ca init --name '%s' --dns '%s' --address ':%s' --provisioner '%s' --password-file '%s' --deployment-type standalone%s 2>&1",
+        "STEPPATH='%s' step ca init --name '%s' --dns '%s' --address ':%s'"
+        .. " --provisioner '%s' --password-file '%s' --deployment-type standalone%s 2>&1",
         step_ca_base,
         ca_name,
         ca_common_name,
@@ -2577,7 +2596,11 @@ function mymodule.initialize_ca(clientdata)
     -- Generate Intermediate CA if requested
     if gen_intermediate then
         local intermediate_cmd = string.format(
-            "STEPPATH='%s' step certificate create '%s Intermediate CA' %s/certs/intermediate_ca.crt %s/secrets/intermediate_ca_key --profile intermediate-ca --ca %s/certs/root_ca.crt --ca-key %s/secrets/root_ca_key --ca-password-file %s --not-after=%dh --no-password --insecure 2>&1",
+            "STEPPATH='%s' step certificate create '%s Intermediate CA'"
+            .. " %s/certs/intermediate_ca.crt %s/secrets/intermediate_ca_key"
+            .. " --profile intermediate-ca --ca %s/certs/root_ca.crt"
+            .. " --ca-key %s/secrets/root_ca_key --ca-password-file %s"
+            .. " --not-after=%dh --no-password --insecure 2>&1",
             step_ca_base,
             ca_name,
             step_ca_base,
@@ -2598,7 +2621,9 @@ function mymodule.initialize_ca(clientdata)
 
     -- KMIP Server certificate
     local server_cert_cmd = string.format(
-        "STEPPATH='%s' step ca certificate '%s' %s/certs/server.crt %s/certs/server.key --san '%s' --not-after=%dh --offline --no-password --insecure 2>&1",
+        "STEPPATH='%s' step ca certificate '%s'"
+        .. " %s/certs/server.crt %s/certs/server.key"
+        .. " --san '%s' --not-after=%dh --offline --no-password --insecure 2>&1",
         step_ca_base, ca_common_name, step_ca_base, step_ca_base, sans, validity_h
     )
     exec_as_stepca(server_cert_cmd)
@@ -2606,7 +2631,9 @@ function mymodule.initialize_ca(clientdata)
 
     -- Web UI certificate
     local webui_cert_cmd = string.format(
-        "STEPPATH='%s' step ca certificate 'webui.%s' %s/certs/webui.crt %s/certs/webui.key --san 'webui.%s,%s' --not-after=%dh --offline --no-password --insecure 2>&1",
+        "STEPPATH='%s' step ca certificate 'webui.%s'"
+        .. " %s/certs/webui.crt %s/certs/webui.key"
+        .. " --san 'webui.%s,%s' --not-after=%dh --offline --no-password --insecure 2>&1",
         step_ca_base, ca_common_name, step_ca_base, step_ca_base, ca_common_name, sans, validity_h
     )
     exec_as_stepca(webui_cert_cmd)
@@ -2895,7 +2922,7 @@ function mymodule.get_provisioner_details(clientdata)
 
     local filter = '.authority.provisioners[] | select(.name == "' .. prov_name .. '")'
     local full_json = exec_command("jq '" .. filter .. "' " .. step_config)
-    
+
     if full_json == "" or full_json:lower():match("null") then
         return { error = create_cfe("error", "Provisioner '" .. prov_name .. "' not found.", "Error", "", "text") }
     end
@@ -2921,7 +2948,7 @@ function mymodule.get_token_form(clientdata)
 
     local form = {}
     form.prov_name = create_cfe("prov_name", prov_name, "Provisioner Name", "", "text")
-    
+
     form.subject = create_cfe(
         "subject",
         clientdata.subject or "",
@@ -2948,7 +2975,7 @@ function mymodule.generate_token(clientdata)
     local prov_pass = clientdata.prov_password
 
     if not prov_name or prov_name == "" or not subject or subject == "" or not prov_pass or prov_pass == "" then
-        return { 
+        return {
             error = create_cfe("error", "All fields are required to generate a token", "Error", "", "text"),
             prov_name = create_cfe("prov_name", prov_name or "", "Provisioner", "", "text"),
             subject = create_cfe("subject", subject or "", "Subject", "", "text")
@@ -2973,10 +3000,10 @@ function mymodule.generate_token(clientdata)
     )
 
     local output = exec_as_stepca(cmd)
-    
+
     -- Cleanup the temp password file
     os.remove(tmp_pass)
-    
+
     -- Clean ANSI and find the token (JWT starts with ey and has dots)
     local clean_output = output:gsub("%[%d+;%d+;%d+m", ""):gsub("%[%d+;%d+m", ""):gsub("%[%d+m", ""):gsub("%[0m", "")
     local token = clean_output:match("(eyJ[%w%-_%.]+)")
@@ -2992,7 +3019,7 @@ function mymodule.generate_token(clientdata)
             prov_name = create_cfe("prov_name", prov_name, "Provisioner", "", "text")
         }
     else
-        return { 
+        return {
             error = create_cfe("error", "Failed to generate token: " .. clean_output, "Error", "", "text"),
             prov_name = create_cfe("prov_name", prov_name, "Provisioner", "", "text"),
             subject = create_cfe("subject", subject, "Subject", "", "text")
@@ -3008,9 +3035,12 @@ function mymodule.get_global_claims()
     -- Basic extraction of global claims
     -- Using jq if available is much safer for reading too
     if has_jq() then
-        claims.min_dur = exec_command("jq -r '.authority.claims.minTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
-        claims.max_dur = exec_command("jq -r '.authority.claims.maxTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
-        claims.default_dur = exec_command("jq -r '.authority.claims.defaultTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.min_dur = exec_command(
+            "jq -r '.authority.claims.minTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.max_dur = exec_command(
+            "jq -r '.authority.claims.maxTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.default_dur = exec_command(
+            "jq -r '.authority.claims.defaultTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
     else
         -- Fallback to basic string matching
         claims.min_dur = config_content:match('"minTLSCertDuration"%s*:%s*"([^"]+)"') or ""
@@ -3039,7 +3069,7 @@ function mymodule.save_global_claims(clientdata)
     local err = validate_duration(clientdata.min_dur, "Global Min Duration") or
                 validate_duration(clientdata.max_dur, "Global Max Duration") or
                 validate_duration(clientdata.default_dur, "Global Default Duration")
-    
+
     if err then
         result.error = create_cfe("error", err, "Validation Error", "", "text")
         return result
@@ -3063,14 +3093,15 @@ function mymodule.save_global_claims(clientdata)
     local filter = table.concat(updates, " | ")
 
     local tmp_file = "/tmp/ca.json.tmp"
-    local cmd = string.format("jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
-    
+    local cmd = string.format(
+        "jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
+
     local output = exec_as_stepca(cmd)
-    
+
     -- Check service status for context-specific feedback
     local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
     local is_running = step_status:match("started")
-    
+
     local success_msg = "Global claims updated."
     if is_running then
         success_msg = success_msg .. " Restart or reload step-ca service to apply changes."
@@ -3081,7 +3112,7 @@ function mymodule.save_global_claims(clientdata)
     result.success = create_cfe("success", success_msg, "Success", "", "text")
     result.is_running = is_running
     result.restart_required = true
-    
+
     -- Update result values
     result.min_dur.value = clientdata.min_dur
     result.max_dur.value = clientdata.max_dur
@@ -3098,9 +3129,12 @@ function mymodule.get_provisioner_claims(clientdata)
     local claims = {}
     if has_jq() then
         local base_filter = '.authority.provisioners[] | select(.name == "' .. prov_name .. '") | .claims'
-        claims.x509_min = exec_command("jq -r '" .. base_filter .. ".minTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
-        claims.x509_max = exec_command("jq -r '" .. base_filter .. ".maxTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
-        claims.x509_def = exec_command("jq -r '" .. base_filter .. ".defaultTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.x509_min = exec_command(
+            "jq -r '" .. base_filter .. ".minTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.x509_max = exec_command(
+            "jq -r '" .. base_filter .. ".maxTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
+        claims.x509_def = exec_command(
+            "jq -r '" .. base_filter .. ".defaultTLSCertDuration // \"\"' " .. step_config):gsub("%s+", "")
     end
 
     return {
@@ -3115,7 +3149,7 @@ end
 -- Save provisioner-specific claims using jq
 function mymodule.save_provisioner_claims(clientdata)
     local result = mymodule.get_provisioner_claims(clientdata)
-    
+
     if not has_jq() then
         result.error = create_cfe("error", "Advanced configuration requires 'jq' package.", "Error", "", "text")
         return result
@@ -3131,7 +3165,7 @@ function mymodule.save_provisioner_claims(clientdata)
     local err = validate_duration(clientdata.x509_min, "X.509 Min Duration") or
                 validate_duration(clientdata.x509_max, "X.509 Max Duration") or
                 validate_duration(clientdata.x509_def, "X.509 Default Duration")
-    
+
     if err then
         result.error = create_cfe("error", err, "Validation Error", "", "text")
         return result
@@ -3146,7 +3180,7 @@ function mymodule.save_provisioner_claims(clientdata)
     if min then table.insert(claims_parts, string.format('minTLSCertDuration: "%s"', min)) end
     if max then table.insert(claims_parts, string.format('maxTLSCertDuration: "%s"', max)) end
     if def then table.insert(claims_parts, string.format('defaultTLSCertDuration: "%s"', def)) end
-    
+
     if #claims_parts == 0 then
         result.success = create_cfe("success", "No changes were made.", "Success", "", "text")
         return result
@@ -3163,14 +3197,15 @@ function mymodule.save_provisioner_claims(clientdata)
 
     local tmp_file = "/tmp/ca.json.tmp"
     -- Redirect stderr to /dev/null or capture it to avoid pollutive output
-    local cmd = string.format("jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
-    
+    local cmd = string.format(
+        "jq '%s' %s > %s && mv %s %s 2>/dev/null", filter, step_config, tmp_file, tmp_file, step_config)
+
     local output = exec_as_stepca(cmd)
-    
+
     -- Check service status for context-specific feedback
     local step_status = exec_command("rc-service " .. servicename .. " status 2>&1")
     local is_running = step_status:match("started")
-    
+
     local success_msg = string.format("Provisioner claims updated for '%s'.", name)
     if is_running then
         success_msg = success_msg .. " Restart or reload step-ca service to apply changes."
@@ -3182,7 +3217,7 @@ function mymodule.save_provisioner_claims(clientdata)
     result.success = create_cfe("success", success_msg, "Success", "", "text")
     result.is_running = is_running
     result.restart_required = true
-    
+
     -- Update the result values with what was just saved
     result.x509_min.value = clientdata.x509_min
     result.x509_max.value = clientdata.x509_max
