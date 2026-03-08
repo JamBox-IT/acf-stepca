@@ -18,7 +18,8 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y shellcheck make sed
+        sudo apt-get install -y shellcheck make sed lua5.4 luarocks
+        sudo luarocks install luacheck
 
     - name: Build scripts
       run: make
@@ -29,7 +30,7 @@ jobs:
     - name: Verify distribution package creation
       run: |
         make dist
-        ls -lh s6-openrc-compat-*.tar.gz
+        ls -lh acf-stepca-*.tar.bz2
 
   release:
     needs: test
@@ -59,7 +60,7 @@ jobs:
 
     - name: Generate SHA-512 checksum
       run: |
-        for f in s6-openrc-compat-*.tar.gz; do
+        for f in acf-stepca-*.tar.bz2; do
           sha512sum "$f" > "$f.sha512"
         done
 
@@ -67,8 +68,8 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          s6-openrc-compat-*.tar.gz
-          s6-openrc-compat-*.tar.gz.sha512
+          acf-stepca-*.tar.bz2
+          acf-stepca-*.tar.bz2.sha512
         draft: false
         prerelease: false
         generate_release_notes: true

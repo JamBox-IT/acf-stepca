@@ -31,6 +31,16 @@ all:
 clean:
 	rm -rf $(tarball) $(P)
 
+check:
+	# Lint Lua files
+	luacheck $(APP_NAME)*.lua
+	# Basic syntax check for LSP files (extracting Lua within <% %> blocks)
+	for f in $(APP_NAME)*.lsp; do \
+		sed -n '/<%/ , /%>/p' "$$f" | sed 's/<%//g; s/%>//g' | luac -p - || exit 1; \
+	done
+	# Lint shell scripts (if any)
+	if [ -n "$(SUPPORT_SCRIPTS)" ]; then shellcheck -s ash $(SUPPORT_SCRIPTS); fi
+
 dist: $(tarball)
 
 install:
