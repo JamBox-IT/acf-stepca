@@ -81,13 +81,13 @@
         </div>
 
         <div class="form-group" style="margin-bottom: 20px;">
-            <label for="key_size"><%= html.html_escape(view.key_size.label) %></label>
-            <select id="key_size" name="key_size" style="width: auto; max-width: 150px;">
-                <% for _, opt in ipairs(view.key_size.option) do %>
-                <option value="<%= html.html_escape(opt) %>" <%= opt == view.key_size.value and "selected" or "" %>><%= html.html_escape(opt) %></option>
+            <label for="key_type"><%= html.html_escape(view.key_type.label) %></label>
+            <select id="key_type" name="key_type" style="width: auto; max-width: 150px;">
+                <% for _, opt in ipairs(view.key_type.option) do %>
+                <option value="<%= html.html_escape(opt) %>" <%= opt == view.key_type.value and "selected" or "" %>><%= html.html_escape(opt) %></option>
                 <% end %>
             </select>
-            <br><small style="color: #777; font-size: 85%;"><%= html.html_escape(view.key_size.descr) %></small>
+            <br><small style="color: #777; font-size: 85%;"><%= html.html_escape(view.key_type.descr) %></small>
         </div>
     </fieldset>
 

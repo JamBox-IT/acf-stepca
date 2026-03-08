@@ -4,6 +4,5 @@ Applications	70Step_CA	Status           	status
 Applications	70Step_CA	Certificates    	listcerts
 Applications	70Step_CA	Provisioners    	provisioners
 Applications	70Step_CA	Templates       	templates
-Applications	70Step_CA	CA_Hierarchy    	cahierarchy
 Applications	70Step_CA	Revocation_List 	viewcrl
 Applications	70Step_CA	Configuration   	config

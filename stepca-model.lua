@@ -1090,13 +1090,13 @@ function mymodule.get_create_form(clientdata)
         "text"
     )
 
-    form.key_size = create_cfe(
-        "key_size",
-        clientdata.key_size or "2048",
-        "Key Size (bits)",
-        "RSA key size",
+    form.key_type = create_cfe(
+        "key_type",
+        clientdata.key_type or "EC/P-256",
+        "Key Algorithm",
+        "Key type and curve/size (EC recommended)",
         "select",
-        {"2048", "4096", "8192"}
+        {"EC/P-256", "EC/P-384", "EC/P-521", "RSA/2048", "RSA/4096", "RSA/8192", "OKP/Ed25519"}
     )
 
     return form
@@ -1125,6 +1125,7 @@ function mymodule.create_certificate(clientdata)
     local provisioner = clientdata.provisioner or "admin"
     local cert_profile = clientdata.cert_profile or "leaf"
     local cert_template = clientdata.cert_template or "None"
+    local key_type = clientdata.key_type or "EC/P-256"
 
     local cert_path = step_certs_path .. "/" .. cn .. ".crt"
     local key_path = step_certs_path .. "/" .. cn .. ".key"
@@ -1167,6 +1168,9 @@ function mymodule.create_certificate(clientdata)
             table.insert(flags, string.format("--ca-password-file='%s'", step_password_file))
         end
 
+        if cert_profile == "self-signed" then
+            table.insert(flags, "--subtle")
+        end
         table.insert(flags, string.format("--not-after='%s'", validity_duration))
         table.insert(flags, "--no-password")
         table.insert(flags, "--insecure")
@@ -1183,6 +1187,20 @@ function mymodule.create_certificate(clientdata)
         table.insert(flags, string.format("--not-after='%s'", validity_duration))
         table.insert(flags, string.format("--provisioner='%s'", provisioner))
     end
+
+    -- Key algorithm: --kty with --curve (EC/OKP) or --size (RSA)
+    local kty, kparam = key_type:match("^([^/]+)/(.+)$")
+    if kty == "RSA" then
+        table.insert(flags, "--kty=RSA")
+        table.insert(flags, string.format("--size=%s", kparam))
+    elseif kty == "OKP" then
+        table.insert(flags, "--kty=OKP")
+        table.insert(flags, string.format("--curve=%s", kparam))
+    elseif kty == "EC" and kparam ~= "P-256" then
+        table.insert(flags, "--kty=EC")
+        table.insert(flags, string.format("--curve=%s", kparam))
+    end
+    -- EC/P-256 is the step default; no flags needed
 
     -- SANs are flags too — must stay in the flags table (before positionals)
     local san = clientdata.san_list or ""
@@ -1520,21 +1538,16 @@ function mymodule.save_template(clientdata)
     -- Save content using su to step-ca user
     local tmp_file = string.format("/tmp/step-template-%d-%d.tmp", os.time(), math.random(1000, 9999))
     local f = io.open(tmp_file, "w")
-    if f then
-        f:write(content)
-        f:close()
-
-        -- Copy as step-ca user
-        local cmd = string.format("cp '%s' '%s'", tmp_file, template_path)
-        local output = exec_as_stepca(cmd)
-
-        -- Delete as root (since we created it as root)
-        os.remove(tmp_file)
-
-        result.success = create_cfe("success", "Template '" .. template_name .. "' saved.", "Success", "", "text")
-    else
-        result.error = create_cfe("error", "Failed to create temporary save file", "Error", "", "text")
+    if not f then
+        result.error = create_cfe("error", "Failed to create temporary file", "Error", "", "text")
+        return result
     end
+    f:write(content or "")
+    f:close()
+    local cmd = string.format("cp '%s' '%s'", tmp_file, template_path)
+    exec_as_stepca(cmd)
+    os.remove(tmp_file)
+    result.success = create_cfe("success", "Template '" .. template_name .. "' saved.", "Success", "", "text")
 
     return result
 end
@@ -1954,6 +1967,7 @@ function mymodule.get_ca_hierarchy()
     -- Read root CA
     if file_exists(step_certs_path .. "/root_ca.crt") then
         hierarchy.root_ca = create_cfe(
+            "root_ca",
             exec_command("step certificate inspect " .. step_certs_path .. "/root_ca.crt 2>/dev/null"),
             "Root CA",
             "Root Certificate Authority",
@@ -1964,7 +1978,10 @@ function mymodule.get_ca_hierarchy()
     -- Read intermediate CA if exists
     if file_exists(step_certs_path .. "/intermediate_ca.crt") then
         hierarchy.intermediate_ca = create_cfe(
-            exec_command("step certificate inspect " .. step_certs_path .. "/intermediate_ca.crt 2>/dev/null"),
+            "intermediate_ca",
+            exec_command(
+                "step certificate inspect " .. step_certs_path .. "/intermediate_ca.crt 2>/dev/null"
+            ),
             "Intermediate CA",
             "Intermediate Certificate Authority",
             "longtext"
