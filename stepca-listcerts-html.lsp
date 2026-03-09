@@ -2,15 +2,27 @@
 <% htmlviewfunctions = require("htmlviewfunctions") %>
 <% html = require("acf.html") %>
 
-<h1>Certificate List</h1>
+<h1>Certificates</h1>
+
+<form method="get" action="<%= html.html_escape(page_info.script .. page_info.prefix .. page_info.controller .. "/listcerts") %>" class="form-inline" style="margin-bottom: 15px;">
+	<div class="form-group">
+		<label for="filter">Show: </label>
+		<select name="filter" id="filter" class="form-control" onchange="this.form.submit()">
+			<% local current_filter = view.filter and view.filter.value or "all" %>
+			<% for _, opt in ipairs({"all", "infrastructure", "ephemeral"}) do %>
+			<option value="<%= opt %>"<%= current_filter == opt and " selected" or "" %>><%= opt:sub(1,1):upper() .. opt:sub(2) %></option>
+			<% end %>
+		</select>
+	</div>
+</form>
 
 <div class="panel panel-default">
 	<div class="panel-heading">
-		<h3 class="panel-title">All Certificates</h3>
+		<h3 class="panel-title">Certificates</h3>
 	</div>
 	<div class="panel-body">
 		<% if view.count then %>
-		<p>Total Certificates: <strong><%= html.html_escape(view.count.value) %></strong></p>
+		<p>Total: <strong><%= html.html_escape(view.count.value) %></strong></p>
 		<% end %>
 
 		<% if view.certificates and #view.certificates > 0 then %>

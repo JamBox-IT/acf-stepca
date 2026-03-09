@@ -1,11 +1,8 @@
 # Prefix and controller are already known at this point
 # Cat   	Group   	Tab             	Action
 Applications	70Step_CA	Status           	status
-Applications	70Step_CA	Infrastructure_Certs	listinfra
-Applications	70Step_CA	Ephemeral_Certs 	listephe
-Applications	70Step_CA	All_Certificates	listcerts
+Applications	70Step_CA	Certificates    	listcerts
 Applications	70Step_CA	Provisioners    	provisioners
 Applications	70Step_CA	Templates       	templates
-Applications	70Step_CA	CA_Hierarchy    	cahierarchy
 Applications	70Step_CA	Revocation_List 	viewcrl
 Applications	70Step_CA	Configuration   	config

@@ -12,3 +12,9 @@ acf-stepca © Corey De Lasaux 2024 <cordelster@gmail.com>
 
 Initialize and manage Step certificates from Alpine Linux ACF. 
 
+## Note
+Be aware that the implementatiion of Step limits what is availabe from the DB. Some of the information is derived from parsing through 
+the files and the more certs yoou have, the slower the interface will become.
+
+## References
+https://smallstep.com/docs/step-ca/certificate-authority-server-production/#enable-active-revocation-on-your-intermediate-ca
