@@ -1113,17 +1113,19 @@ list_certs_from_badger = function(clientdata)
         if type_ok and window_ok then
             local cert_path = step_certs_path .. "/" .. cert_name .. ".crt"
             table.insert(certs, {
-                name          = create_cfe("name",          cert_name,                         "Certificate Name", "Certificate filename",      "text"),
-                subject       = create_cfe("subject",       rec.cn,                            "Common Name",      "Certificate CN",             "text"),
-                serial        = create_cfe("serial",        rec.serial,                        "Serial Number",    "Certificate serial number",  "text"),
-                cert_type     = create_cfe("cert_type",     cert_type,                         "Type",             "Certificate type",           "text"),
-                is_system_cert= create_cfe("is_system_cert",tostring(is_system),               "System Cert",      "Managed",                    "text"),
-                is_revoked    = create_cfe("is_revoked",    tostring(rec.validity == "Revoked"),"Revoked",         "Is revoked",                 "boolean"),
-                path          = create_cfe("path",          cert_path,                         "File Path",        "Path to file",               "text"),
-                days_remaining= create_cfe("days_remaining",tostring(days_remaining or "N/A"), "Days Left",        "Days left",                  "text"),
-                expiration_date=create_cfe("expiration_date",rec.not_after,                    "Expiration",       "Expiration date",            "text"),
-                status        = create_cfe("status",        calc_status,                       "Status",           "Expiration/Revocation status","text"),
-                color         = create_cfe("color",         color,                             "Status Color",     "Status indicator color",     "text"),
+                name = create_cfe("name", cert_name, "Certificate Name", "Certificate filename", "text"),
+                subject = create_cfe("subject", rec.cn, "Common Name", "Certificate CN", "text"),
+                serial = create_cfe("serial", rec.serial, "Serial Number", "Certificate serial number", "text"),
+                cert_type = create_cfe("cert_type", cert_type, "Type", "Certificate type", "text"),
+                is_system_cert = create_cfe("is_system_cert", tostring(is_system), "System Cert", "Managed", "text"),
+                is_revoked = create_cfe("is_revoked",
+                    tostring(rec.validity == "Revoked"), "Revoked", "Is revoked", "boolean"),
+                path = create_cfe("path", cert_path, "File Path", "Path to file", "text"),
+                days_remaining = create_cfe("days_remaining",
+                    tostring(days_remaining or "N/A"), "Days Left", "Days left", "text"),
+                expiration_date = create_cfe("expiration_date", rec.not_after, "Expiration", "Expiration date", "text"),
+                status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
+                color = create_cfe("color", color, "Status Color", "Status indicator color", "text"),
             })
         end
     end
@@ -1153,17 +1155,21 @@ list_certs_from_badger = function(clientdata)
                 local include = type_ok and window_ok
                 if include then
                     table.insert(certs, {
-                        name          = create_cfe("name",          sys_name,                              "Certificate Name", "Certificate filename",      "text"),
-                        subject       = create_cfe("subject",       meta.subject or sys_name,              "Common Name",      "Certificate CN",             "text"),
-                        serial        = create_cfe("serial",        meta.serial or "",                     "Serial Number",    "Certificate serial number",  "text"),
-                        cert_type     = create_cfe("cert_type",     cert_type,                             "Type",             "Certificate type",           "text"),
-                        is_system_cert= create_cfe("is_system_cert","true",                                "System Cert",      "Managed",                    "text"),
-                        is_revoked    = create_cfe("is_revoked",    "false",                               "Revoked",          "Is revoked",                 "boolean"),
-                        path          = create_cfe("path",          cert_file,                             "File Path",        "Path to file",               "text"),
-                        days_remaining= create_cfe("days_remaining",tostring(days_num or "N/A"),           "Days Left",        "Days left",                  "text"),
-                        expiration_date=create_cfe("expiration_date",meta.not_after or "",                 "Expiration",       "Expiration date",            "text"),
-                        status        = create_cfe("status",        calc_status,                           "Status",           "Expiration/Revocation status","text"),
-                        color         = create_cfe("color",         color,                                 "Status Color",     "Status indicator color",     "text"),
+                        name = create_cfe("name", sys_name, "Certificate Name", "Certificate filename", "text"),
+                        subject = create_cfe("subject",
+                            meta.subject or sys_name, "Common Name", "Certificate CN", "text"),
+                        serial = create_cfe("serial",
+                            meta.serial or "", "Serial Number", "Certificate serial number", "text"),
+                        cert_type = create_cfe("cert_type", cert_type, "Type", "Certificate type", "text"),
+                        is_system_cert = create_cfe("is_system_cert", "true", "System Cert", "Managed", "text"),
+                        is_revoked = create_cfe("is_revoked", "false", "Revoked", "Is revoked", "boolean"),
+                        path = create_cfe("path", cert_file, "File Path", "Path to file", "text"),
+                        days_remaining = create_cfe("days_remaining",
+                            tostring(days_num or "N/A"), "Days Left", "Days left", "text"),
+                        expiration_date = create_cfe("expiration_date",
+                            meta.not_after or "", "Expiration", "Expiration date", "text"),
+                        status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
+                        color = create_cfe("color", color, "Status Color", "Status indicator color", "text"),
                     })
                 end
             end
@@ -1172,12 +1178,14 @@ list_certs_from_badger = function(clientdata)
 
     return {
         certificates = certs,
-        count        = create_cfe("count",        tostring(#certs),                            "Certificates",     "Number of certificates",     "text"),
-        filter       = create_cfe("filter",       filter,                                      "Filter",           "Certificate filter",         "select",
+        count = create_cfe("count", tostring(#certs), "Certificates", "Number of certificates", "text"),
+        filter = create_cfe("filter", filter, "Filter", "Certificate filter", "select",
             {"all", "infrastructure", "ephemeral"}),
-        expired_window = create_cfe("expired_window", expired_window,                          "Show expired",     "How far back to show expired certs", "select",
+        expired_window = create_cfe("expired_window", expired_window,
+            "Show expired", "How far back to show expired certs", "select",
             {"smart", "24h", "1w", "all"}),
-        db_exec_time = create_cfe("db_exec_time", string.format("%.1f", exec_time),            "DB Load Time",     "Execution time of bulk loader","text"),
+        db_exec_time = create_cfe("db_exec_time",
+            string.format("%.1f", exec_time), "DB Load Time", "Execution time of bulk loader", "text"),
     }
 end
 
@@ -2119,7 +2127,8 @@ function mymodule.add_provisioner(clientdata)
             return result
         end
         if config_endpoint == "" then
-            result.error = create_cfe("error", "Configuration Endpoint is required for OIDC provisioner", "Error", "", "text")
+            result.error = create_cfe("error",
+                "Configuration Endpoint is required for OIDC provisioner", "Error", "", "text")
             return result
         end
     end
