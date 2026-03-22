@@ -886,6 +886,7 @@ function mymodule.list_certificates(clientdata)
                     color = "red"
                 end
 
+                local key_file = step_certs_path .. "/" .. cert_name .. ".key"
                 table.insert(certs, {
                     name = create_cfe("name", cert_name, "Certificate Name", "Certificate filename", "text"),
                     subject = create_cfe("subject", subject, "Common Name", "Certificate CN", "text"),
@@ -904,6 +905,10 @@ function mymodule.list_certificates(clientdata)
                     expiration_date = create_cfe("expiration_date", not_after, "Expiration", "Expiration date", "text"),
                     status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
                     color = create_cfe("color", color, "Status Color", "Status indicator color", "text"),
+                    has_local_cert = create_cfe("has_local_cert", "true",
+                        "Local Cert", "Local cert file present", "boolean"),
+                    has_local_key = create_cfe("has_local_key", tostring(file_exists(key_file)),
+                        "Local Key", "Local key file present", "boolean"),
                     -- Raw values used by the expired-window sub-filter (not rendered by the view)
                     _finish_epoch    = exp_epoch,
                     _lifetime_days   = total_lifetime_days,
@@ -1112,6 +1117,7 @@ list_certs_from_badger = function(clientdata)
 
         if type_ok and window_ok then
             local cert_path = step_certs_path .. "/" .. cert_name .. ".crt"
+            local key_path  = step_certs_path .. "/" .. cert_name .. ".key"
             table.insert(certs, {
                 name = create_cfe("name", cert_name, "Certificate Name", "Certificate filename", "text"),
                 subject = create_cfe("subject", rec.cn, "Common Name", "Certificate CN", "text"),
@@ -1126,6 +1132,10 @@ list_certs_from_badger = function(clientdata)
                 expiration_date = create_cfe("expiration_date", rec.not_after, "Expiration", "Expiration date", "text"),
                 status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
                 color = create_cfe("color", color, "Status Color", "Status indicator color", "text"),
+                has_local_cert = create_cfe("has_local_cert", tostring(file_exists(cert_path)),
+                    "Local Cert", "Local cert file present", "boolean"),
+                has_local_key = create_cfe("has_local_key", tostring(file_exists(key_path)),
+                    "Local Key", "Local key file present", "boolean"),
             })
         end
     end
@@ -1170,6 +1180,11 @@ list_certs_from_badger = function(clientdata)
                             meta.not_after or "", "Expiration", "Expiration date", "text"),
                         status = create_cfe("status", calc_status, "Status", "Expiration/Revocation status", "text"),
                         color = create_cfe("color", color, "Status Color", "Status indicator color", "text"),
+                        -- CA cert files are present; keys are CA secrets and not downloadable
+                        has_local_cert = create_cfe("has_local_cert", "true",
+                            "Local Cert", "Local cert file present", "boolean"),
+                        has_local_key = create_cfe("has_local_key", "false",
+                            "Local Key", "Local key file present", "boolean"),
                     })
                 end
             end
@@ -1469,13 +1484,14 @@ function mymodule.create_certificate(clientdata)
         table.insert(flags, "--no-password")
         table.insert(flags, "--insecure")
     else
-        -- CA track: step ca certificate
+        -- CA track: step ca certificate — requires CA to be online
         if not is_running then
-            table.insert(flags, "--offline")
-            exec_options.pass_flag = "--password-file"
-        else
-            exec_options.pass_flag = "--provisioner-password-file"
+            result.error = create_cfe("error",
+                "CA is not running — start the step-ca service before issuing certificates.",
+                "Error", "", "text")
+            return result
         end
+        exec_options.pass_flag = "--provisioner-password-file"
 
         table.insert(flags, string.format("--set=profile='%s'", actual_profile))
         table.insert(flags, string.format("--not-after='%s'", validity_duration))
@@ -3063,21 +3079,6 @@ function mymodule.get_client_form(clientdata)
 
 
 
-    form.client_type = create_cfe(
-
-        clientdata.client_type or "generic",
-
-        "Client Type",
-
-        "Type of client",
-
-        "select",
-
-        {"generic", "netapp", "vmware-vsphere", "dell-emc", "pure-storage", "other"}
-
-    )
-
-
 
     form.validity_days = create_cfe(
 
@@ -3116,108 +3117,79 @@ end
 -- Create Client certificate
 
 function mymodule.create_client_certificate(clientdata)
-
     local result = {}
 
-
-
     local client_name = clientdata.client_name
-
     if not client_name or client_name == "" then
-
-        result.error = create_cfe("Client name required", "Error", "", "error")
-
+        result.error = create_cfe("error", "Client name required", "Error", "", "text")
         return result
-
     end
 
+    -- Require CA to be running — offline issuance bypasses BadgerDB (certs cannot be revoked)
+    local step_status = exec_command("rc-service step-ca status 2>&1")
+    if not step_status:match("started") then
+        result.error = create_cfe("error",
+            "CA is not running — start the step-ca service before issuing client certificates.",
+            "Error", "", "text")
+        return result
+    end
 
-
-    local client_type = clientdata.client_type or "generic"
-
-    local validity = clientdata.validity_days or "1095"
-
+    local validity_hours = (tonumber(clientdata.validity_days or "1095") * 24) .. "h"
     local cert_path = step_certs_path .. "/" .. client_name .. ".crt"
-
-    local key_path = step_certs_path .. "/" .. client_name .. ".key"
-
-
+    local key_path  = step_certs_path .. "/" .. client_name .. ".key"
 
     if file_exists(cert_path) then
-
-        result.error = create_cfe("Certificate already exists for this client", "Error", "", "error")
-
+        result.error = create_cfe("error", "Certificate already exists for this client", "Error", "", "text")
         return result
-
     end
 
+    -- Resolve provisioner: use caller-supplied, or first JWK provisioner, or "admin" fallback
+    local provisioner = clientdata.provisioner or ""
+    if provisioner == "" then
+        local prov_list = mymodule.list_provisioners()
+        if prov_list.provisioners then
+            for _, p in ipairs(prov_list.provisioners) do
+                if p.type and p.type.value == "JWK" then
+                    provisioner = p.name.value
+                    break
+                end
+            end
+        end
+        if provisioner == "" then provisioner = "admin" end
+    end
 
-
-    local cmd = string.format(
-
-        "step ca certificate '%s' '%s' '%s' --not-after=%sh --offline --no-password --insecure 2>&1",
-
-        client_name, cert_path, key_path, validity
-
-    )
-
-
-
-    local output = exec_command(cmd)
-
-
+    local flags = {
+        string.format("--provisioner='%s'", provisioner),
+        string.format("--not-after='%s'", validity_hours),
+    }
+    local exec_options = {
+        use_pass  = true,
+        pass_flag = "--provisioner-password-file",
+        force     = true,
+    }
+    local output = stepca_exec("ca", "certificate", flags, {client_name, cert_path, key_path}, exec_options)
 
     if file_exists(cert_path) then
+        result.success = create_cfe("success", "Client certificate created", "Success", "", "text")
+        result.cert_pem = create_cfe("cert_pem", exec_as_stepca("cat '" .. cert_path .. "'"),
+            "Certificate (PEM)", "Install on client", "longtext")
+        result.key_pem = create_cfe("key_pem", exec_as_stepca("cat '" .. key_path .. "'"),
+            "Private Key (PEM)", "Keep secure", "longtext")
 
-        result.success = create_cfe("Client certificate created", "Success", "", "success")
-
-        result.cert_pem = create_cfe(fs.read_file(cert_path), "Certificate (PEM)", "Install on client", "longtext")
-        result.key_pem = create_cfe(fs.read_file(key_path), "Private Key (PEM)", "Keep secure", "longtext")
-
-
-
-        if file_exists(step_certs_path .. "/root_ca.crt") then
-
-            result.root_ca = create_cfe(
-
-                fs.read_file(step_certs_path .. "/root_ca.crt"),
-
-                "Root CA Certificate",
-
-                "Install as trusted CA on client",
-
-                "longtext"
-
-            )
-
+        local root_crt = step_certs_path .. "/root_ca.crt"
+        if file_exists(root_crt) then
+            result.root_ca = create_cfe("root_ca", exec_as_stepca("cat '" .. root_crt .. "'"),
+                "Root CA Certificate", "Install as trusted CA on client", "longtext")
         end
 
-
-
-        -- Client-type specific instructions
-        local instructions
-        if client_type == "netapp" then
-            instructions = "NetApp ONTAP: See manual for 'security certificate install' steps."
-        elseif client_type == "vmware-vsphere" then
-            instructions = "VMware: Add as KMS cluster and upload CA/Client certs."
-        else
-            instructions = "Generic: Install Root CA and client certificate/key."
-        end
-
-
-
-        result.instructions = create_cfe(instructions, "Installation Instructions", "", "longtext")
-
+        local instructions = "Install the Root CA as a trusted certificate authority, then install the client certificate and private key on the target device."
+        result.instructions = create_cfe("instructions", instructions, "Installation Instructions", "", "longtext")
     else
-
-        result.error = create_cfe("Certificate creation failed: " .. output, "Error", "", "error")
-
+        local clean = output:gsub("%[%d[;%d]*m", ""):gsub("\27%[%d[;%d]*m", "")
+        result.error = create_cfe("error", "Certificate creation failed: " .. clean, "Error", "", "text")
     end
-
-
 
     return result
-
 end
 
 

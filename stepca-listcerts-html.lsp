@@ -105,12 +105,14 @@
 							title="View certificate details">
 							<i class="icon-eye-open"></i> View
 						</a>
+						<% if cert.has_local_cert and cert.has_local_cert.value == "true" then %>
 						<a href="<%= html.html_escape(page_info.script .. page_info.prefix .. page_info.controller .. "/exportcert?cert_name=" .. cert.name.value .. "&type=cert") %>"
 							class="btn btn-xs btn-success"
 							title="Download certificate (.crt)">
 							📄
 						</a>
-						<% if cert.is_system_cert.value ~= "true" then %>
+						<% end %>
+						<% if cert.is_system_cert.value ~= "true" and cert.has_local_key and cert.has_local_key.value == "true" then %>
 						<a href="<%= html.html_escape(page_info.script .. page_info.prefix .. page_info.controller .. "/exportcert?cert_name=" .. cert.name.value .. "&type=key") %>"
 							class="btn btn-xs btn-warning"
 							title="Download private key (.key)">

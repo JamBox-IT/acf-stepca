@@ -43,13 +43,7 @@
 		<div class="form-group">
 			<label for="client_name">Client Name *</label>
 			<%= htmlviewfunctions.displayformitem(view.client_name) %>
-			<p class="help-block">Unique identifier for the client (e.g., netapp-cluster01, my-laptop)</p>
-		</div>
-
-		<div class="form-group">
-			<label for="client_type">Client Type</label>
-			<%= htmlviewfunctions.displayformitem(view.client_type) %>
-			<p class="help-block">Select the type of client to generate instructions for</p>
+			<p class="help-block">Unique identifier for the client (e.g., storage-array01, my-laptop)</p>
 		</div>
 
 		<div class="form-group">
