@@ -2793,14 +2793,6 @@ function mymodule.get_setup_form(clientdata)
         "text"
     )
 
-    form.ca_validity_years = create_cfe(
-        "ca_validity_years",
-        clientdata.ca_validity_years or "10",
-        "Root CA Validity (Years)",
-        "How long the root CA certificate is valid (typically 10-20 years)",
-        "text"
-    )
-
     form.ca_provisioner = create_cfe(
         "ca_provisioner",
         clientdata.ca_provisioner or "admin",
@@ -2870,7 +2862,6 @@ function mymodule.initialize_ca(clientdata)
     local ca_email = clientdata.ca_email or ""
     local ca_provisioner = clientdata.ca_provisioner or "admin"
     local ca_port = clientdata.ca_port or default_port
-    local ca_validity_years = tonumber(clientdata.ca_validity_years) or 10
     local enable_ssh = clientdata.enable_ssh == "true"
     local gen_intermediate = clientdata.gen_intermediate == "true"
     local intermediate_validity_years = tonumber(clientdata.intermediate_validity_years) or 5
