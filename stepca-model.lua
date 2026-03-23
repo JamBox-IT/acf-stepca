@@ -1557,6 +1557,7 @@ function mymodule.create_certificate(clientdata)
             return result
         end
         exec_options.pass_flag = "--provisioner-password-file"
+        exec_options.use_api = true
 
         table.insert(flags, string.format("--set=profile='%s'", actual_profile))
         table.insert(flags, string.format("--not-after='%s'", validity_duration))
@@ -2442,36 +2443,6 @@ function mymodule.delete_provisioner(clientdata)
 end
 
 -- Get CA hierarchy
-function mymodule.get_ca_hierarchy()
-    local hierarchy = {}
-
-    -- Read root CA
-    if file_exists(step_certs_path .. "/root_ca.crt") then
-        hierarchy.root_ca = create_cfe(
-            "root_ca",
-            exec_command("step certificate inspect " .. step_certs_path .. "/root_ca.crt 2>/dev/null"),
-            "Root CA",
-            "Root Certificate Authority",
-            "longtext"
-        )
-    end
-
-    -- Read intermediate CA if exists
-    if file_exists(step_certs_path .. "/intermediate_ca.crt") then
-        hierarchy.intermediate_ca = create_cfe(
-            "intermediate_ca",
-            exec_command(
-                "step certificate inspect " .. step_certs_path .. "/intermediate_ca.crt 2>/dev/null"
-            ),
-            "Intermediate CA",
-            "Intermediate Certificate Authority",
-            "longtext"
-        )
-    end
-
-    return hierarchy
-end
-
 -- Get CRL info
 function mymodule.get_crl_info()
     local crl_info = {}
@@ -2581,36 +2552,6 @@ function mymodule.refresh_crl()
 end
 
 
--- List client certificates
-function mymodule.list_clients()
-    local clients = {}
-
-    -- Find client certificates (exclude server, CA, and webui certs)
-    local cert_files = exec_command(
-        "ls -1 " .. step_certs_path .. "/*-client.crt " .. step_certs_path .. "/client*.crt 2>/dev/null")
-
-    for cert_file in cert_files:gmatch("[^\n]+") do
-        local cert_name = cert_file:match("([^/]+)%.crt$")
-        if cert_name then
-            -- Get certificate expiration
-            local expiry_cmd = "step certificate inspect " .. cert_file ..
-                " --format json 2>/dev/null | grep -o '\"not_after\":\"[^\"]*\"'"
-            local expiry = exec_command(expiry_cmd)
-
-            table.insert(clients, {
-                name = create_cfe(cert_name, "Client Name"),
-                path = create_cfe(cert_file, "Certificate Path"),
-                expiry = create_cfe(expiry, "Expiration")
-            })
-        end
-    end
-
-    return {
-        clients = clients,
-        count = create_cfe(tostring(#clients), "Total Clients")
-    }
-end
-
 -- Get configuration (PKI parts)
 function mymodule.get_config()
     local config = {}
@@ -2719,6 +2660,18 @@ function mymodule.save_config(clientdata)
             result.ca_dns.value = new_dns
             result.ca_address.value = new_addr
             result.restart_required = true
+
+            -- Sync defaults.json ca-url to match new dnsNames
+            local defaults_path = step_config:gsub("ca%.json$", "defaults.json")
+            if posix.stat(defaults_path) ~= nil then
+                local port_match = new_addr:match(":(%d+)$") or "9000"
+                local new_ca_url = string.format("https://%s:%s", new_dns, port_match)
+                local dfilter = string.format('.["ca-url"] = "%s"', new_ca_url)
+                local dtmp = "/tmp/defaults.json.tmp"
+                local dcmd = string.format("jq '%s' %s > %s && mv %s %s 2>/dev/null",
+                    dfilter, defaults_path, dtmp, dtmp, defaults_path)
+                exec_as_stepca(dcmd)
+            end
         end
     end
 
@@ -2754,23 +2707,6 @@ STEPCA_USER=step-ca
 end
 
 -- Get audit log (PKI parts)
-function mymodule.get_audit_log(clientdata)
-    local log = {}
-
-    local lines = clientdata.lines or "100"
-
-    -- Get step-ca logs (from journald or syslog)
-    local log_output = exec_command("tail -n " .. lines .. " /var/log/step-ca.log 2>/dev/null")
-    log.step_log = create_cfe(
-        log_output,
-        "step-ca Log",
-        "Recent certificate authority operations",
-        "longtext"
-    )
-
-    return log
-end
-
 -- ===========================================================================
 -- First-Time Setup Wizard Functions
 -- ===========================================================================
