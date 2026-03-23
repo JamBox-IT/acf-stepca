@@ -237,21 +237,6 @@ end
 -- Configuration and Audit Actions
 -- ===========================================================================
 
--- View CA hierarchy
-function mymodule.cahierarchy(self)
-    return self.model.get_ca_hierarchy()
-end
-
--- Import certificate
-function mymodule.importcert(self)
-    return self.model.get_import_form(self.clientdata)
-end
-
--- Process certificate import
-function mymodule.doimport(self)
-    return self.model.import_certificate(self.clientdata)
-end
-
 -- View CRL
 function mymodule.viewcrl(self)
     return self.model.get_crl_info()
@@ -260,16 +245,6 @@ end
 -- Refresh CRL
 function mymodule.refreshcrl(self)
     return self.model.refresh_crl()
-end
-
--- Client certificate management
-function mymodule.clients(self)
-    return self.model.list_clients()
-end
-
--- Audit log viewer (PKI specific part)
-function mymodule.auditlog(self)
-    return self.model.get_audit_log(self.clientdata)
 end
 
 -- System configuration (PKI specific part)
